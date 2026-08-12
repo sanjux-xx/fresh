@@ -72,10 +72,7 @@ from food_backend import food_bp
 # APP
 # ===============================
 app = Flask(__name__)
-@app.route("/test-sentry")
-def test_sentry():
-    1/0
-    return "ok"
+
 app.register_blueprint(food_bp)
 
 # Defence in depth for templates: |safe_url renders only plain http(s)
