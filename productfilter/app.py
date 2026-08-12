@@ -47,7 +47,11 @@ sentry_sdk.init(
     dsn=os.getenv("SENTRY_DSN"),
     integrations=[FlaskIntegration()],
     traces_sample_rate=0.2,
-    send_default_pii=False
+     send_default_pii=False,
+    # SystemExit is raised by gunicorn's handle_abort when the master sends
+    # SIGABRT to a worker that timed out on an idle client connection.
+    # This is expected gunicorn behaviour, not an application error.
+    ignore_errors=[SystemExit],
 )
 
 # ===============================
