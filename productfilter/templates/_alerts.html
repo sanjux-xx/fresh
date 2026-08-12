@@ -1,0 +1,28 @@
+{# ---------------------------------------------------------------------------
+   Price-alert UI, shared by every page that lists products.
+
+   This lived only in index.html, which is why category pages had no way to set
+   an alert at all. The element IDs are contractual — static/notifications.js
+   looks them up by name — so they must not be renamed.
+--------------------------------------------------------------------------- #}
+
+<div class="bell-wrap">
+  <button class="bellbtn-top" id="bell-btn" data-action="toggle-alerts"
+          aria-label="Price alerts" title="Price alerts">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+    </svg>
+    <span id="bell-badge" class="hidden"></span>
+  </button>
+
+  <div id="alerts-panel" class="hidden">
+    <div class="panel-head">
+      <h3>Price alerts</h3>
+      <button data-action="clear-alerts">Clear all</button>
+    </div>
+    <div id="alerts-list"></div>
+    <div class="panel-foot">Checked every 30 minutes in the background</div>
+  </div>
+</div>

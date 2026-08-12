@@ -1,0 +1,15 @@
+# NOTE: the SerpApi client this app imports (`from serpapi import GoogleSearch`)
+# ships in the `google-search-results` package. The separate PyPI package named
+# `serpapi` is a DIFFERENT, newer client that does NOT export GoogleSearch —
+# and it installs into the same `serpapi` module path. Listing both meant
+# whichever pip resolved last won, so a clean deploy could come up with the
+# wrong one and die at import time with:
+#     ImportError: cannot import name 'GoogleSearch' from 'serpapi'
+# Only google-search-results belongs here.
+#
+# Versions are pinned so a deploy six months from now installs what was tested.
+Flask==3.0.3
+requests==2.32.3
+google-search-results==2.4.2
+sentry-sdk[flask]==2.14.0
+gunicorn==22.0.0

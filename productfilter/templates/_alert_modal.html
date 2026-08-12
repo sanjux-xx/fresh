@@ -1,0 +1,25 @@
+{# Price-alert modal. IDs are read by static/notifications.js — do not rename. #}
+<div id="alert-modal" class="hidden">
+  <div id="modal-inner" class="scale-95 opacity-0">
+    <div class="modal-head">
+      <h3>Set a price alert</h3>
+      <button data-action="close-alert" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-prod">
+      <div id="modal-product-title"></div>
+      <div class="cur">Current best price: <span id="modal-current-price"></span></div>
+    </div>
+    <label class="modal-label" for="modal-target-price">Tell me when it drops to:</label>
+    <div class="modal-input">
+      <span>₹</span>
+      <input type="number" id="modal-target-price" placeholder="Your target price" min="1">
+    </div>
+    <p class="modal-hint">You'll get a browser notification when the price hits your target. No account, no app.</p>
+    <div class="modal-btns">
+      <button class="ghost" data-action="close-alert">Cancel</button>
+      <button class="go" data-action="confirm-alert">Set alert</button>
+    </div>
+  </div>
+</div>
+<script src="/static/notifications.js" defer></script>
+<script src="/static/js/productfilter.js" defer></script>

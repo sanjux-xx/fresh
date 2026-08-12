@@ -1,0 +1,21 @@
+{# In-flow install card for the home page. Sits in the content where a reader
+   naturally arrives, rather than covering the page from a fixed bar. Hidden
+   until the browser says the app is installable. #}
+<section id="install-card" class="hidden">
+  <img src="/static/icons/icon-192.png" alt="" width="60" height="60">
+  <div class="ic-body">
+    <b>Keep ProductFilter one tap away</b>
+    <p>Install it as an app: opens straight to search, works offline, and your
+      price alerts keep running in the background.</p>
+    <ul class="ic-points">
+      <li>No app store, no account</li>
+      <li>Under a megabyte</li>
+      <li>Remove it any time</li>
+    </ul>
+    <p class="ic-ios">On iPhone: tap <b>Share</b>, then <b>Add to Home Screen</b>.</p>
+  </div>
+  <div class="ic-actions">
+    <button class="ic-go" data-action="install-app">Install app</button>
+    <button class="ic-later" data-action="dismiss-install">Not now</button>
+  </div>
+</section>

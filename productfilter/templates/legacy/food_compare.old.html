@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{{ item_name }} — {{ brand }} Price Comparison | CostShot</title>
+  <meta name="description" content="Compare prices of {{ item_name }} across platforms and find the best deal."/>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+  <style>
+    * { font-family: 'DM Sans', sans-serif; }
+    h1,h2,h3 { font-family: 'Syne', sans-serif; }
+    .navbar-glass { backdrop-filter:blur(18px); background:rgba(28,10,0,0.88); border-bottom:1px solid rgba(255,255,255,0.08); }
+    .brand-hero { background: linear-gradient(135deg, #3b1200 0%, #7c2d12 50%, #3b1200 100%); }
+    .platform-card { transition: transform 0.25s cubic-bezier(.34,1.56,.64,1), box-shadow 0.25s ease; }
+    .platform-card:hover { transform: translateY(-6px); box-shadow: 0 16px 40px rgba(0,0,0,0.12); }
+    .cheapest-ring { box-shadow: 0 0 0 3px #22C55E, 0 8px 32px rgba(34,197,94,0.2); }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(20px);} to{opacity:1;transform:translateY(0);} }
+    .fade-up { animation: fadeUp 0.5s ease forwards; opacity:0; }
+    .d1{animation-delay:.1s} .d2{animation-delay:.2s} .d3{animation-delay:.3s}
+    ::-webkit-scrollbar { width:5px; }
+    ::-webkit-scrollbar-thumb { background:#F97316; border-radius:4px; }
+  </style>
+</head>
+<body class="bg-orange-50 antialiased">
+
+  <!-- NAVBAR -->
+  <nav class="navbar-glass fixed top-0 left-0 right-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-16">
+      <a href="/" class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-orange-500 to-red-500 flex items-center justify-center">
+          <span class="text-white font-bold text-sm" style="font-family:Syne">CS</span>
+        </div>
+        <span class="text-white font-bold text-xl hidden sm:block" style="font-family:Syne">CostShot</span>
+      </a>
+      <a href="/food" class="text-white/60 hover:text-white text-sm transition flex items-center gap-1">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        Back
+      </a>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <div class="brand-hero pt-16">
+    <div class="max-w-3xl mx-auto px-4 sm:px-6 py-10 text-center">
+      <div class="text-5xl mb-4">
+        {% if 'burger' in item_name.lower() or 'mac' in item_name.lower() %}🍔
+        {% elif 'pizza' in item_name.lower() %}🍕
+        {% elif 'fries' in item_name.lower() %}🍟
+        {% elif 'coke' in item_name.lower() or 'pepsi' in item_name.lower() %}🥤
+        {% elif 'cake' in item_name.lower() %}🍰
+        {% elif 'chicken' in item_name.lower() %}🍗
+        {% else %}🍽️{% endif %}
+      </div>
+      <h1 class="text-3xl sm:text-4xl font-bold text-white" style="font-family:Syne">{{ item_name }}</h1>
+      <p class="text-white/60 mt-2 text-sm">{{ brand }} — Compare prices across platforms</p>
+    </div>
+  </div>
+
+  <!-- PRICE CARDS -->
+  <div class="max-w-2xl mx-auto px-4 sm:px-6 py-10 space-y-4">
+
+    {% set all_prices = [] %}
+    {% if prices.brand %}{% set _ = all_prices.append(prices.brand) %}{% endif %}
+    {% if prices.swiggy %}{% set _ = all_prices.append(prices.swiggy) %}{% endif %}
+    {% if prices.zepto %}{% set _ = all_prices.append(prices.zepto) %}{% endif %}
+    {% set min_price = all_prices | min if all_prices else 0 %}
+
+    <!-- Brand Official -->
+    <div class="fade-up d1 platform-card bg-white rounded-2xl p-5 flex items-center justify-between gap-4 shadow-md border border-orange-100
+      {% if prices.brand and prices.brand == min_price %}cheapest-ring{% endif %}">
+      <div class="flex items-center gap-4">
+        <div class="w-12 h-12 rounded-xl bg-green-50 flex items-center justify-center text-2xl">🟢</div>
+        <div>
+          <div class="font-bold text-gray-900">{{ brand }} Official</div>
+          <div class="text-gray-500 text-xs mt-0.5">Order directly from the brand</div>
+          {% if prices.brand and prices.brand == min_price %}
+          <span class="inline-block bg-green-100 text-green-600 text-[10px] font-bold px-2 py-0.5 rounded-full mt-1">Cheapest ✓</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="text-right">
+        {% if prices.brand %}
+        <div class="text-2xl font-bold text-green-500" style="font-family:Syne">₹{{ prices.brand }}</div>
+        <button class="mt-2 bg-green-500 text-white text-xs px-4 py-1.5 rounded-xl" disabled>Buy</button>
+        {% else %}
+        <div class="text-gray-400 font-semibold text-lg">N/A</div>
+        <button class="mt-2 bg-gray-100 text-gray-400 text-xs px-4 py-1.5 rounded-xl" disabled>Unavailable</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Swiggy -->
+    <div class="fade-up d2 platform-card bg-white rounded-2xl p-5 flex items-center justify-between gap-4 shadow-md border border-orange-100
+      {% if prices.swiggy and prices.swiggy == min_price %}cheapest-ring{% endif %}">
+      <div class="flex items-center gap-4">
+        <div class="w-12 h-12 rounded-xl bg-orange-50 flex items-center justify-center text-2xl">🟠</div>
+        <div>
+          <div class="font-bold text-gray-900">Swiggy</div>
+          <div class="text-gray-500 text-xs mt-0.5">Fast delivery, exclusive offers</div>
+          {% if prices.swiggy and prices.swiggy == min_price %}
+          <span class="inline-block bg-green-100 text-green-600 text-[10px] font-bold px-2 py-0.5 rounded-full mt-1">Cheapest ✓</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="text-right">
+        {% if prices.swiggy %}
+        <div class="text-2xl font-bold text-orange-500" style="font-family:Syne">₹{{ prices.swiggy }}</div>
+        <button class="mt-2 bg-orange-500 text-white text-xs px-4 py-1.5 rounded-xl" disabled>Buy</button>
+        {% else %}
+        <div class="text-gray-400 font-semibold text-lg">N/A</div>
+        <button class="mt-2 bg-gray-100 text-gray-400 text-xs px-4 py-1.5 rounded-xl" disabled>Unavailable</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Zepto -->
+    <div class="fade-up d3 platform-card bg-white rounded-2xl p-5 flex items-center justify-between gap-4 shadow-md border border-orange-100
+      {% if prices.zepto and prices.zepto == min_price %}cheapest-ring{% endif %}">
+      <div class="flex items-center gap-4">
+        <div class="w-12 h-12 rounded-xl bg-purple-50 flex items-center justify-center text-2xl">🟣</div>
+        <div>
+          <div class="font-bold text-gray-900">Zepto</div>
+          <div class="text-gray-500 text-xs mt-0.5">10-minute delivery</div>
+          {% if prices.zepto and prices.zepto == min_price %}
+          <span class="inline-block bg-green-100 text-green-600 text-[10px] font-bold px-2 py-0.5 rounded-full mt-1">Cheapest ✓</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="text-right">
+        {% if prices.zepto %}
+        <div class="text-2xl font-bold text-purple-500" style="font-family:Syne">₹{{ prices.zepto }}</div>
+        <button class="mt-2 bg-purple-500 text-white text-xs px-4 py-1.5 rounded-xl" disabled>Buy</button>
+        {% else %}
+        <div class="text-gray-400 font-semibold text-lg">N/A</div>
+        <button class="mt-2 bg-gray-100 text-gray-400 text-xs px-4 py-1.5 rounded-xl" disabled>Unavailable</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Savings callout -->
+    {% if all_prices | length > 1 %}
+    {% set max_price = all_prices | max %}
+    {% if max_price > min_price %}
+    <div class="bg-green-50 border border-green-200 rounded-2xl p-4 flex items-center gap-3 mt-2">
+      <div class="text-3xl">💰</div>
+      <div>
+        <div class="font-bold text-green-700">You save ₹{{ max_price - min_price }} by choosing the cheapest option!</div>
+        <div class="text-gray-500 text-xs mt-0.5">Prices may vary by location and time</div>
+      </div>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    <p class="text-center text-gray-400 text-xs mt-4">
+      Prices are approximate. Always check the platform before ordering.
+    </p>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="bg-gray-900 text-gray-400 py-8 px-4">
+    <div class="max-w-7xl mx-auto flex justify-between items-center text-xs">
+      <span>© 2025 CostShot — Food price comparison</span>
+      <a href="/food" class="hover:text-white transition">← All Brands</a>
+    </div>
+  </footer>
+
+</body>
+</html>

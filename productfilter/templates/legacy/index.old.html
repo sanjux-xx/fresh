@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en" style="background:#111827; min-height:100vh;">
+<head>
+  <link rel="manifest" href="/manifest.json"/>
+<meta name="theme-color" content="#4F46E5"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="CostShot"/>
+<link rel="apple-touch-icon" href="/static/icons/icon-180.png"/>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <title>CostShot — India's Smartest Price Comparison</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary:  { DEFAULT: '#4F46E5', light: '#6366F1', dark: '#3730A3' },
+            accent:   { DEFAULT: '#F97316', light: '#FB923C' },
+            save:     { DEFAULT: '#22C55E', light: '#4ADE80', dark: '#16A34A' },
+            surface:  { DEFAULT: '#F9FAFB', card: '#FFFFFF' },
+          },
+          fontFamily: {
+            display: ['Syne', 'sans-serif'],
+            body:    ['DM Sans', 'sans-serif'],
+          },
+          boxShadow: {
+            card:    '0 2px 20px rgba(79,70,229,0.08)',
+            'card-hover': '0 8px 40px rgba(79,70,229,0.18)',
+            glow:    '0 0 40px rgba(79,70,229,0.25)',
+          },
+          animation: {
+            'fade-up':   'fadeUp 0.5s ease forwards',
+            'pulse-dot': 'pulseDot 2s infinite',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    * { font-family: 'DM Sans', sans-serif; }
+    h1,h2,h3,.font-display { font-family: 'Syne', sans-serif; }
+    .hero-bg {
+      background: #0f0c29;
+      background: radial-gradient(ellipse at 20% 60%, rgba(79,70,229,0.35) 0%, transparent 60%),
+                  radial-gradient(ellipse at 80% 20%, rgba(249,115,22,0.20) 0%, transparent 50%),
+                  radial-gradient(ellipse at 50% 100%, rgba(34,197,94,0.15) 0%, transparent 50%),
+                  linear-gradient(135deg, #0f0c29 0%, #1e1b4b 50%, #0f172a 100%);
+    }
+    .hero-bg::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+      opacity: 0.3;
+    }
+    .search-glow:focus-within {
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.4), 0 20px 60px rgba(79,70,229,0.3);
+    }
+    .cat-card { transition: transform 0.25s cubic-bezier(.34,1.56,.64,1), box-shadow 0.25s ease; }
+    .cat-card:hover { transform: translateY(-6px) scale(1.03); box-shadow: 0 16px 40px rgba(79,70,229,0.2); }
+    .product-card { transition: transform 0.25s cubic-bezier(.34,1.56,.64,1), box-shadow 0.25s ease; }
+    .product-card:hover { transform: translateY(-8px); box-shadow: 0 20px 50px rgba(79,70,229,0.18); }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(24px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes pulseDot { 0%,100% { transform:scale(1); opacity:1; } 50% { transform:scale(1.4); opacity:0.6; } }
+    .fade-up { animation: fadeUp 0.55s ease forwards; opacity:0; }
+    .fade-up-d1 { animation-delay:.1s } .fade-up-d2 { animation-delay:.2s }
+    .fade-up-d3 { animation-delay:.3s } .fade-up-d4 { animation-delay:.4s }
+    .navbar-glass { backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); background: rgba(15,12,41,0.75); border-bottom: 1px solid rgba(255,255,255,0.07); }
+    .trend-pill { transition: background 0.2s, color 0.2s, transform 0.2s; }
+    .trend-pill:hover { background: #4F46E5; color: white; transform: scale(1.05); }
+    .price-best { background: linear-gradient(135deg, #22C55E, #16A34A); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .offer-badge { background: linear-gradient(135deg, #F97316, #EF4444); }
+    .skeleton { background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    ::-webkit-scrollbar { width:6px; }
+    ::-webkit-scrollbar-thumb { background:#6366F1; border-radius:4px; }
+    .mobile-cta { display: none; }
+    @media (max-width: 768px) { .mobile-cta { display:block; } }
+  </style>
+  <script src="/static/notifications.js" defer></script>
+</head>
+
+<body style="min-height:100%; display:flex; flex-direction:column;">
+
+  <!-- STICKY NAVBAR -->
+  <nav class="navbar-glass fixed top-0 left-0 right-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16 gap-4">
+        <a href="/" class="flex items-center gap-2 flex-shrink-0">
+          <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center shadow-glow">
+            <span class="text-white font-display font-bold text-sm">CS</span>
+          </div>
+          <span class="font-display font-bold text-white text-xl tracking-tight hidden sm:block">CostShot</span>
+        </a>
+        <form method="POST" action="/" class="hidden flex-1 max-w-lg">
+          <div class="relative w-full">
+            <input type="text" name="product_query" placeholder="Search products to compare prices..."
+              class="w-full bg-white/10 text-white placeholder-white/50 border border-white/15 rounded-full px-5 py-2 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"/>
+            <button type="submit" class="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-primary rounded-full flex items-center justify-center hover:bg-primary-dark transition">
+              <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            </button>
+          </div>
+        </form>
+        <div class="flex items-center gap-3 flex-shrink-0">
+          <a href="/category/mobiles" class="text-white/70 hover:text-white text-sm font-medium transition hidden sm:block">Mobiles</a>
+          <a href="/category/laptops" class="text-white/70 hover:text-white text-sm font-medium transition hidden sm:block">Laptops</a>
+          <a href="/category/groceries" class="text-white/70 hover:text-white text-sm font-medium transition hidden sm:block">Groceries</a>
+          <div class="w-px h-5 bg-white/20 hidden sm:block"></div>
+          <div class="w-2 h-2 rounded-full bg-save animate-pulse-dot"></div>
+          <span class="text-white/50 text-xs hidden sm:block">Live prices</span>
+          <div class="relative">
+  <button
+    id="bell-btn"
+    onclick="toggleAlertsPanel()"
+    class="relative w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition"
+    title="Price Alerts"
+  >
+    <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+    </svg>
+    <!-- Badge -->
+    <span
+      id="bell-badge"
+      class="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full items-center justify-center hidden"
+    ></span>
+  </button>
+
+  <!-- Alerts dropdown panel -->
+  <div
+    id="alerts-panel"
+    class="hidden absolute right-0 top-12 w-80 bg-white rounded-2xl shadow-xl border border-gray-100 z-50 flex-col overflow-hidden"
+  >
+    <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
+      <h3 class="font-bold text-gray-900 text-sm" style="font-family:Syne">🔔 Price Alerts</h3>
+      <button onclick="clearAllAlerts()" class="text-xs text-red-400 hover:text-red-600 transition">Clear all</button>
+    </div>
+    <div id="alerts-list" class="p-3 space-y-2 max-h-72 overflow-y-auto"></div>
+    <div class="px-4 py-3 border-t border-gray-100 bg-gray-50">
+      <p class="text-xs text-gray-400 text-center">Alerts check every 30 minutes in background</p>
+    </div>
+  </div>
+</div>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- HERO SECTION -->
+  <section class="hero-bg relative min-h-[600px] flex flex-col items-center justify-center px-4 pt-20 pb-16 overflow-hidden">
+    <div class="absolute -top-32 -right-32 w-96 h-96 rounded-full bg-primary/20 blur-3xl pointer-events-none"></div>
+    <div class="absolute -bottom-24 -left-24 w-80 h-80 rounded-full bg-accent/15 blur-3xl pointer-events-none"></div>
+
+    <div class="fade-up fade-up-d1 mb-6 inline-flex items-center gap-2 bg-white/10 border border-white/20 rounded-full px-4 py-1.5 backdrop-blur-sm">
+      <span class="w-2 h-2 rounded-full bg-save animate-pulse-dot"></span>
+      <span class="text-white/80 text-xs font-medium tracking-wide">Comparing prices across 6+ platforms in real-time</span>
+    </div>
+
+    <h1 class="fade-up fade-up-d2 font-display text-4xl sm:text-5xl md:text-6xl font-bold text-white text-center leading-tight max-w-3xl">
+      Never Overpay<br/>
+      <span class="text-transparent bg-clip-text bg-gradient-to-r from-primary-light to-accent">on Anything</span>
+      <span class="text-white"> Again.</span>
+    </h1>
+    <p class="fade-up fade-up-d3 mt-4 text-white/60 text-center text-lg max-w-xl">
+      Instantly compare prices from Amazon, Flipkart, Croma &amp; more — in one search.
+    </p>
+
+    <div class="fade-up fade-up-d4 w-full max-w-2xl mt-8">
+      <form method="POST" action="/" class="relative">
+        <div class="search-glow bg-white rounded-2xl shadow-card overflow-hidden flex items-center p-2 gap-2 transition-all duration-300">
+          <div class="pl-3">
+            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          </div>
+          <input type="text" name="product_query" id="hero-search"
+            placeholder="Search for mobiles, laptops, groceries..."
+            class="flex-1 bg-transparent text-gray-800 placeholder-gray-400 py-3 px-2 text-base focus:outline-none min-w-0" autocomplete="off"/>
+          <button type="submit" class="flex-shrink-0 bg-gradient-to-r from-primary to-primary-light text-white font-semibold px-6 py-3 rounded-xl hover:shadow-glow hover:scale-[1.03] transition-all duration-200 text-sm whitespace-nowrap">
+            Compare Prices
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <div class="fade-up fade-up-d4 mt-6 flex flex-wrap justify-center gap-2">
+      <span class="text-white/40 text-xs self-center mr-1">Trending:</span>
+      {% for term in ['iPhone 16', 'Samsung Galaxy S25', 'MacBook Air M3', 'OnePlus 12', 'Atta 10kg'] %}
+      <form method="POST" action="/" class="inline">
+        <input type="hidden" name="product_query" value="{{ term }}"/>
+        <button type="submit" class="trend-pill bg-white/10 border border-white/15 text-white/70 text-xs px-3 py-1.5 rounded-full backdrop-blur-sm cursor-pointer">
+          {{ term }}
+        </button>
+      </form>
+      {% endfor %}
+    </div>
+
+    <div class="fade-up fade-up-d4 mt-12 grid grid-cols-3 gap-6 max-w-lg w-full">
+      {% for stat, label in [('6+', 'Platforms'), ('10M+', 'Products'), ('upto 80%', 'Savings')] %}
+      <div class="text-center">
+        <div class="font-display text-2xl font-bold text-white">{{ stat }}</div>
+        <div class="text-white/40 text-xs mt-1">{{ label }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <!-- RESULTS SECTION -->
+  {% if products %}
+  <section class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+    <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
+      <div>
+        <h2 class="font-display text-2xl font-bold text-gray-900">Price Comparison Results</h2>
+        <p class="text-gray-500 text-sm mt-1">Found <span class="font-semibold text-primary">{{ products|length }}</span> products — sorted by lowest price</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-gray-500 text-sm">Sort:</span>
+        <select class="border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-primary/40 shadow-sm">
+          <option>Lowest Price</option>
+          <option>Highest Discount</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+      {% for product in products %}
+      {% set offers = product.offers %}
+      {% set best = product.best_price %}
+      {% set max_price = namespace(val=0) %}
+      {% for o in offers %}
+        {% if o.price > max_price.val %}{% set max_price.val = o.price %}{% endif %}
+      {% endfor %}
+      {% set discount = ((max_price.val - best) / max_price.val * 100)|int if max_price.val > best else 0 %}
+
+      <div class="product-card bg-white rounded-2xl shadow-card overflow-hidden flex flex-col group">
+        <div class="relative bg-gray-50 h-52 flex items-center justify-center overflow-hidden">
+          {% if product.image %}
+          <img src="{{ product.image }}" alt="{{ product.title }}"
+            class="h-44 w-auto object-contain group-hover:scale-105 transition-transform duration-300"
+            loading="lazy" onerror="this.onerror=null;this.src='https://via.placeholder.com/200x200?text=No+Image';"/>
+          {% else %}
+          <div class="w-24 h-24 rounded-2xl bg-gray-200 flex items-center justify-center">
+            <svg class="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="18" height="18" rx="3" stroke-width="1.5"/>
+              <circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/>
+              <path d="m21 15-5-5L5 21" stroke-width="1.5"/>
+            </svg>
+          </div>
+          {% endif %}
+          {% if discount > 0 %}
+          <div class="offer-badge absolute top-3 left-3 text-white text-xs font-bold px-2 py-1 rounded-lg">{{ discount }}% OFF</div>
+          {% endif %}
+          {% if product.variant and product.variant != 'Base' %}
+          <div class="absolute top-3 right-3 bg-primary/90 text-white text-xs font-medium px-2.5 py-1 rounded-full backdrop-blur-sm">{{ product.variant }}</div>
+          {% endif %}
+        </div>
+
+        <div class="flex flex-col flex-1 p-4">
+          <h3 class="font-semibold text-gray-800 text-sm leading-snug line-clamp-2 mb-3">{{ product.title }}</h3>
+          <div class="flex items-baseline gap-2 mb-1">
+            <span class="price-best font-display text-2xl font-bold">₹{{ "{:,.0f}".format(product.best_price) }}</span>
+            {% if max_price.val > best %}
+            <span class="text-gray-400 text-sm line-through">₹{{ "{:,.0f}".format(max_price.val) }}</span>
+            {% endif %}
+          </div>
+          {% if discount > 0 %}
+          <div class="text-save text-xs font-semibold mb-3">You save ₹{{ "{:,.0f}".format(max_price.val - best) }}</div>
+          {% endif %}
+
+            <!-- SET PRICE ALERT — per card -->
+           <button
+           class="w-full flex items-center justify-center gap-2 border border-indigo-200 text-indigo-600 font-semibold py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 transition text-xs mb-3"
+            onclick="openAlertModal('{{ product.title | e }}', {{ product.best_price }}, '{{ product.best_link | e }}')"
+           >
+           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+           </svg>
+           Set Price Alert
+           </button>
+
+           <div class="space-y-1.5 mb-4 flex-1">
+            {% for offer in offers[:3] %}
+            <div class="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2">
+              <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full
+                  {% if 'amazon' in offer.store.lower() %}bg-orange-400
+                  {% elif 'flipkart' in offer.store.lower() %}bg-blue-500
+                  {% elif 'croma' in offer.store.lower() %}bg-green-500
+                  {% elif 'reliance' in offer.store.lower() %}bg-purple-500
+                  {% else %}bg-gray-400{% endif %}"></div>
+                <span class="text-gray-600 text-xs font-medium truncate max-w-[80px]">{{ offer.store }}</span>
+              </div>
+              <a href="{{ offer.link }}" target="_blank" rel="noopener noreferrer"
+                class="text-xs font-semibold {% if offer.price == best %}text-save{% else %}text-gray-700{% endif %} hover:text-primary transition">
+                ₹{{ "{:,.0f}".format(offer.price) }}
+              </a>
+            </div>
+            {% endfor %}
+            {% if offers|length > 3 %}
+            <div class="text-center text-xs text-gray-400 pt-1">+{{ offers|length - 3 }} more stores</div>
+            {% endif %}
+          </div>
+
+          <a href="{{ product.best_link }}" target="_blank" rel="noopener noreferrer"
+            class="block w-full text-center bg-gradient-to-r from-primary to-primary-light text-white font-semibold py-3 rounded-xl hover:shadow-glow hover:scale-[1.02] transition-all duration-200 text-sm">
+            🛒 Buy at ₹{{ "{:,.0f}".format(product.best_price) }} →
+          </a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- CATEGORIES GRID -->
+  <section class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
+    <div class="text-center mb-10">
+      <h2 class="font-display text-3xl font-bold text-gray-900">Browse by Category</h2>
+      <p class="text-gray-500 mt-2">Find the best prices across all categories</p>
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+      {% for cat in [
+        {'name':'Mobiles',   'url':'mobiles',   'icon':'📱', 'color':'from-blue-500 to-indigo-600',   'bg':'bg-blue-50'},
+        {'name':'Laptops',   'url':'laptops',   'icon':'💻', 'color':'from-purple-500 to-pink-600',   'bg':'bg-purple-50'},
+        {'name':'Groceries', 'url':'groceries', 'icon':'🛒', 'color':'from-green-500 to-teal-600',    'bg':'bg-green-50'},
+        {'name':'Fruits',    'url':'fruits',    'icon':'🍎', 'color':'from-red-400 to-orange-500',    'bg':'bg-red-50'},
+        {'name':'Food',      'url':'food',      'icon':'🍔', 'color':'from-orange-400 to-red-500',    'bg':'bg-orange-50'},
+        {'name':'Medicine', 'url':'medicine',   'icon':'💊', 'color':'from-cyan-400 to-blue-500',     'bg':'bg-cyan-50'},
+      ] %}
+      <a href="{% if cat.url == 'food' %}/food{% else %}/category/{{ cat.url }}{% endif %}" class="cat-card {{ cat.bg }} rounded-2xl p-5 flex flex-col items-center gap-3 shadow-card border border-white">
+        <div class="w-14 h-14 rounded-2xl bg-gradient-to-br {{ cat.color }} flex items-center justify-center text-2xl shadow-md">{{ cat.icon }}</div>
+        <span class="font-semibold text-gray-700 text-sm text-center">{{ cat.name }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <!-- TRUST BAND -->
+  <section class="bg-gradient-to-r from-primary-dark via-primary to-primary-light py-10 px-4">
+    <div class="max-w-5xl mx-auto grid grid-cols-2 sm:grid-cols-4 gap-6 text-center">
+      {% for icon, val, label in [('🏆','100%','Free to Use'),('🔒','Secure','No Data Saved'),('⚡','Real-time','Live Prices'),('💰','₹500+','Avg. Savings')] %}
+      <div class="flex flex-col items-center gap-2">
+        <div class="text-3xl">{{ icon }}</div>
+        <div class="font-display text-xl font-bold text-white">{{ val }}</div>
+        <div class="text-white/60 text-xs">{{ label }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="bg-gray-900 text-gray-400 py-12 px-4 mt-auto">
+    <div class="max-w-7xl mx-auto">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-8 mb-10">
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center">
+              <span class="text-white font-display font-bold text-sm">CS</span>
+            </div>
+            <span class="font-display font-bold text-white text-lg">CostShot</span>
+          </div>
+          <p class="text-sm leading-relaxed">India's smartest price comparison engine. We help you find the lowest prices across all major platforms — instantly.</p>
+        </div>
+        <div>
+          <h4 class="text-white font-semibold mb-4 text-sm">Categories</h4>
+          <ul class="space-y-2 text-sm">
+            <li><a href="/category/mobiles"   class="hover:text-white transition">📱 Mobiles</a></li>
+            <li><a href="/category/laptops"   class="hover:text-white transition">💻 Laptops</a></li>
+            <li><a href="/category/groceries" class="hover:text-white transition">🛒 Groceries</a></li>
+            <li><a href="/category/fruits"    class="hover:text-white transition">🍎 Fruits</a></li>
+            <li><a href="/category/medicine"  class="hover:text-white transition">💊 Medicine</a></li>
+            <li><a href="/food" class="hover:text-white transition">🍔 Food</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="text-white font-semibold mb-4 text-sm">Platforms We Compare</h4>
+          <div class="flex flex-wrap gap-2">
+            {% for p in ['Amazon','Flipkart','Croma','Reliance','TataCliq','Vijay Sales'] %}
+            <span class="bg-white/10 text-xs px-3 py-1 rounded-full">{{ p }}</span>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      <div class="border-t border-white/10 pt-6 flex flex-col sm:flex-row justify-between items-center gap-3 text-xs">
+        <span>© 2025 CostShot. Prices are fetched live and may change.</span>
+        <div class="flex items-center gap-1">
+          <span class="w-2 h-2 rounded-full bg-save animate-pulse-dot"></span>
+          <span>Prices updated in real-time</span>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>
+  const brandObserver = new IntersectionObserver((entries) => {
+    entries.forEach((e, i) => {
+      if (e.isIntersecting) {
+        setTimeout(() => {
+          e.target.style.opacity = '1';
+          e.target.style.transform = 'translateY(0) scale(1)';
+        }, i * 80);
+        brandObserver.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.brand-card').forEach(card => {
+    const rect = card.getBoundingClientRect();
+    if (rect.top > window.innerHeight) {
+      card.style.opacity = '0';
+      card.style.transform = 'translateY(30px) scale(0.95)';
+      card.style.transition = 'opacity 0.4s ease, transform 0.4s cubic-bezier(.34,1.56,.64,1)';
+      brandObserver.observe(card);
+    }
+  });
+</script>
+  <script>
+    const heroSearch = document.getElementById('hero-search');
+    if (heroSearch && !heroSearch.closest('form').querySelector('input[value]')) {
+      setTimeout(() => heroSearch.focus(), 300);
+    }
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((e, i) => {
+        if (e.isIntersecting) {
+          setTimeout(() => { e.target.style.opacity = '1'; e.target.style.transform = 'translateY(0)'; }, i * 60);
+          observer.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.1 });
+    document.querySelectorAll('.product-card').forEach(card => {
+      card.style.opacity = '0';
+      card.style.transform = 'translateY(20px)';
+      card.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
+      observer.observe(card);
+    });
+  </script>
+<div
+  id="alert-modal"
+  class="hidden fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm items-center justify-center px-4"
+>
+  <div
+    id="modal-inner"
+    class="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 scale-95 opacity-0 transition-all duration-200"
+  >
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-gray-900 text-lg" style="font-family:Syne">🔔 Set Price Alert</h3>
+      <button onclick="closeAlertModal()" class="text-gray-400 hover:text-gray-600 text-xl transition">✕</button>
+    </div>
+
+    <!-- Product -->
+    <div class="bg-gray-50 rounded-2xl p-3 mb-4">
+      <div class="font-semibold text-gray-800 text-sm line-clamp-2" id="modal-product-title"></div>
+      <div class="text-gray-500 text-xs mt-1">Current best price: <span class="font-bold text-green-600" id="modal-current-price"></span></div>
+    </div>
+
+    <!-- Target price input -->
+    <label class="block text-sm font-semibold text-gray-700 mb-2">Notify me when price drops to:</label>
+    <div class="relative mb-4">
+      <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-bold">₹</span>
+      <input
+        type="number"
+        id="modal-target-price"
+        placeholder="Enter target price"
+        class="w-full border-2 border-gray-200 rounded-xl pl-8 pr-4 py-3 text-lg font-bold text-gray-900 focus:outline-none focus:border-indigo-500 transition"
+        min="1"
+      />
+    </div>
+
+    <!-- Info -->
+    <p class="text-xs text-gray-400 mb-4 text-center">
+      We'll send a browser notification when the price drops to your target. No app required.
+    </p>
+
+    <!-- Buttons -->
+    <div class="flex gap-3">
+      <button
+        onclick="closeAlertModal()"
+        class="flex-1 border border-gray-200 text-gray-600 font-semibold py-3 rounded-xl hover:bg-gray-50 transition text-sm"
+      >
+        Cancel
+      </button>
+      <button
+        onclick="confirmAlert()"
+        class="flex-1 bg-gradient-to-r from-indigo-600 to-indigo-500 text-white font-semibold py-3 rounded-xl hover:shadow-lg hover:scale-[1.02] transition text-sm"
+      >
+        Set Alert 🔔
+      </button>
+    </div>
+  </div>
+</div>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js');
+  }
+</script>
+<!-- PWA Install Banner -->
+<div id="pwa-banner" style="display:none" class="fixed bottom-20 left-4 right-4 z-50 bg-white rounded-2xl shadow-2xl p-4 flex items-center gap-3 border border-indigo-100">
+  <img src="/static/icons/icon-72.png" class="w-12 h-12 rounded-xl"/>
+  <div class="flex-1">
+    <div class="font-bold text-gray-900 text-sm">Install CostShot</div>
+    <div class="text-gray-500 text-xs">Add to home screen for best experience</div>
+  </div>
+  <button onclick="installPWA()" class="bg-indigo-600 text-white text-xs font-bold px-3 py-2 rounded-xl">Install</button>
+  <button onclick="dismissBanner()" class="text-gray-400 text-lg">✕</button>
+</div>
+
+<script>
+  let deferredPrompt;
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    // Show banner only if not already installed
+    if (!window.matchMedia('(display-mode: standalone)').matches) {
+      document.getElementById('pwa-banner').style.display = 'flex';
+    }
+  });
+
+  function installPWA() {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then((result) => {
+      if (result.outcome === 'accepted') {
+        document.getElementById('pwa-banner').style.display = 'none';
+      }
+      deferredPrompt = null;
+    });
+  }
+
+  function dismissBanner() {
+    document.getElementById('pwa-banner').style.display = 'none';
+    localStorage.setItem('pwa-dismissed', 'true');
+  }
+
+  // Don't show if user already dismissed
+  if (localStorage.getItem('pwa-dismissed')) {
+    document.getElementById('pwa-banner').style.display = 'none';
+  }
+</script>
+</body>
+</html>
+```
+

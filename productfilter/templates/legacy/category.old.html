@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{{ category|title }} — CostShot Price Comparison</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: { DEFAULT: '#4F46E5', light: '#6366F1', dark: '#3730A3' },
+            accent:  { DEFAULT: '#F97316' },
+            save:    { DEFAULT: '#22C55E', dark: '#16A34A' },
+          },
+          fontFamily: {
+            display: ['Syne', 'sans-serif'],
+            body:    ['DM Sans', 'sans-serif'],
+          },
+          boxShadow: {
+            card:  '0 2px 20px rgba(79,70,229,0.08)',
+            hover: '0 12px 40px rgba(79,70,229,0.18)',
+            glow:  '0 0 40px rgba(79,70,229,0.25)',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    * { font-family: 'DM Sans', sans-serif; }
+    h1,h2,h3,.font-display { font-family: 'Syne', sans-serif; }
+    .navbar-glass { backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); background:rgba(15,12,41,0.88); border-bottom:1px solid rgba(255,255,255,0.08); }
+    .cat-hero { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e1b4b 100%); }
+    .product-card { transition: transform 0.25s cubic-bezier(.34,1.56,.64,1), box-shadow 0.25s ease; }
+    .product-card:hover { transform: translateY(-8px); box-shadow: 0 20px 50px rgba(79,70,229,0.18); }
+    .product-card:hover .card-img { transform: scale(1.07); }
+    .card-img { transition: transform 0.3s ease; }
+    .price-best { background: linear-gradient(135deg, #22C55E, #16A34A); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+    .offer-badge { background: linear-gradient(135deg, #F97316, #EF4444); }
+    .cheapest-glow { box-shadow: 0 0 0 2px #22C55E, 0 8px 32px rgba(34,197,94,0.25); }
+    .filter-pill { transition: all 0.2s; cursor: pointer; }
+    .filter-pill:hover, .filter-pill.active { background:#4F46E5; color:white; border-color:#4F46E5; }
+    ::-webkit-scrollbar { width:5px; }
+    ::-webkit-scrollbar-thumb { background:#6366F1; border-radius:4px; }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(16px);} to{opacity:1;transform:translateY(0);} }
+    .fade-in { animation: fadeUp 0.5s ease forwards; }
+    @keyframes pulseDot { 0%,100%{transform:scale(1);opacity:1;} 50%{transform:scale(1.4);opacity:0.6;} }
+    .pulse-dot { animation: pulseDot 2s infinite; }
+    input[type="range"] { accent-color: #4F46E5; }
+    .mobile-cta { display: none; }
+    @media (max-width: 768px) { .mobile-cta { display:block; } .sidebar { display:none; } }
+  </style>
+  <script src="/static/notifications.js" defer></script>
+</head>
+
+<body class="bg-gray-50 antialiased">
+
+  <!-- NAVBAR -->
+  <nav class="navbar-glass fixed top-0 left-0 right-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16 gap-4">
+        <a href="/" class="flex items-center gap-2 flex-shrink-0">
+          <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-orange-500 flex items-center justify-center">
+            <span class="text-white font-display font-bold text-sm">CS</span>
+          </div>
+          <span class="font-display font-bold text-white text-xl tracking-tight hidden sm:block">CostShot</span>
+        </a>
+        <form method="POST" action="/category/{{ category }}" class="flex-1 max-w-xl">
+          <div class="relative">
+            <input type="text" name="search" placeholder="Search within {{ category|title }}..."
+              class="w-full bg-white/10 text-white placeholder-white/50 border border-white/15 rounded-full px-5 py-2 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"/>
+            <button type="submit" class="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center hover:bg-indigo-700 transition">
+              <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            </button>
+          </div>
+        </form>
+        <div class="relative">
+  <button
+    id="bell-btn"
+    onclick="toggleAlertsPanel()"
+    class="relative w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition"
+    title="Price Alerts"
+  >
+    <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+    </svg>
+    <!-- Badge -->
+    <span
+      id="bell-badge"
+      class="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full items-center justify-center hidden"
+    ></span>
+  </button>
+
+  <!-- Alerts dropdown panel -->
+  <div
+    id="alerts-panel"
+    class="hidden absolute right-0 top-12 w-80 bg-white rounded-2xl shadow-xl border border-gray-100 z-50 flex-col overflow-hidden"
+  >
+    <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
+      <h3 class="font-bold text-gray-900 text-sm" style="font-family:Syne">🔔 Price Alerts</h3>
+      <button onclick="clearAllAlerts()" class="text-xs text-red-400 hover:text-red-600 transition">Clear all</button>
+    </div>
+    <div id="alerts-list" class="p-3 space-y-2 max-h-72 overflow-y-auto"></div>
+    <div class="px-4 py-3 border-t border-gray-100 bg-gray-50">
+      <p class="text-xs text-gray-400 text-center">Alerts check every 30 minutes in background</p>
+    </div>
+  </div>
+</div>
+        <a href="/" class="text-white/60 hover:text-white text-sm transition flex items-center gap-1 flex-shrink-0">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+          <span class="hidden sm:block">Home</span>
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- CATEGORY HERO -->
+  <div class="cat-hero pt-16">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-2 text-white/50 text-xs mb-2">
+          <a href="/" class="hover:text-white transition">Home</a>
+          <span>/</span>
+          <span class="text-white/80">{{ category|title }}</span>
+        </div>
+        <h1 class="font-display text-3xl font-bold text-white">
+          {% if category == 'mobiles' %}📱{% elif category == 'laptops' %}💻{% elif category == 'groceries' %}🛒{% elif category == 'fruits' %}🍎{% elif category == 'medicine' %}💊{% else %}🔍{% endif %}
+          {{ category|title }}
+        </h1>
+        {% if products %}
+        <p class="text-white/60 mt-1 text-sm">
+          <span class="font-semibold text-white">{{ products|length }}</span> products found — comparing across 6+ platforms
+        </p>
+        {% endif %}
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-white/50 text-xs">Sort by:</span>
+        <button onclick="sortProducts('price-asc')"  id="sort-price-asc"  class="sort-btn bg-white/15 border border-white/20 text-white text-xs px-3 py-1.5 rounded-full hover:bg-indigo-600 hover:border-indigo-600 transition">Lowest Price</button>
+        <button onclick="sortProducts('price-desc')" id="sort-price-desc" class="sort-btn bg-white/10 border border-white/15 text-white/70 text-xs px-3 py-1.5 rounded-full hover:bg-indigo-600 hover:border-indigo-600 transition">Highest Price</button>
+        <button onclick="sortProducts('discount')"   id="sort-discount"   class="sort-btn bg-white/10 border border-white/15 text-white/70 text-xs px-3 py-1.5 rounded-full hover:bg-orange-500 hover:border-orange-500 transition">Best Discount</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN: SIDEBAR + GRID -->
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex gap-6 items-start">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar w-64 flex-shrink-0 sticky top-20">
+      <div class="bg-white rounded-2xl shadow-card p-5 space-y-6">
+        <div class="flex items-center justify-between">
+          <h3 class="font-display font-bold text-gray-900 text-base">Filters</h3>
+          <button onclick="clearFilters()" class="text-xs text-indigo-500 hover:text-indigo-700 transition">Clear all</button>
+        </div>
+        <div>
+          <h4 class="font-semibold text-gray-700 text-sm mb-3">Price Range</h4>
+          <input type="range" id="price-range" min="0" max="200000" value="200000" step="1000" class="w-full" oninput="filterByPrice(this.value)"/>
+          <div class="flex justify-between text-xs text-gray-500 mt-1">
+            <span>₹0</span>
+            <span id="price-val" class="text-indigo-600 font-semibold">₹2,00,000</span>
+          </div>
+        </div>
+        <div>
+          <h4 class="font-semibold text-gray-700 text-sm mb-3">Platform</h4>
+          <div class="space-y-2">
+            {% for platform in ['Amazon', 'Flipkart', 'Croma', 'Reliance', 'TataCliq', 'Vijay Sales'] %}
+            <label class="flex items-center gap-2 cursor-pointer group">
+              <input type="checkbox" value="{{ platform.lower() }}" class="platform-check w-4 h-4 accent-indigo-600" onchange="applyFilters()"/>
+              <span class="text-gray-600 text-sm group-hover:text-gray-900 transition">{{ platform }}</span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+        <div>
+          <h4 class="font-semibold text-gray-700 text-sm mb-3">Minimum Discount</h4>
+          <div class="flex flex-wrap gap-2">
+            {% for d in [0, 10, 20, 30, 50] %}
+            <button onclick="filterByDiscount({{ d }})" class="filter-pill border border-gray-200 text-gray-600 text-xs px-2.5 py-1 rounded-full" data-discount="{{ d }}">
+              {% if d == 0 %}All{% else %}{{ d }}%+{% endif %}
+            </button>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- PRODUCT GRID -->
+    <div class="flex-1 min-w-0">
+      {% if products %}
+
+      <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
+        <p class="text-gray-500 text-sm">Showing <span id="result-count" class="font-semibold text-gray-900">{{ products|length }}</span> products</p>
+        <div class="flex gap-1">
+          <button onclick="setView('grid')" id="btn-grid" class="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center hover:bg-indigo-50 hover:border-indigo-300 transition">
+            <svg class="w-4 h-4 text-gray-500" fill="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          </button>
+          <button onclick="setView('list')" id="btn-list" class="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center hover:bg-indigo-50 hover:border-indigo-300 transition">
+            <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="products-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+        {% for product in products %}
+        {% set offers = product.offers if product.offers is defined else [] %}
+        {% set best = product.best_price if product.best_price is defined else product.price | replace('₹', '') | replace(',', '') | float %}
+        {% set max_price = namespace(val=0) %}
+        {% for o in offers %}
+          {% if o.price > max_price.val %}{% set max_price.val = o.price %}{% endif %}
+        {% endfor %}
+        {% if max_price.val == 0 %}{% set max_price.val = best %}{% endif %}
+        {% set discount = ((max_price.val - best) / max_price.val * 100)|int if max_price.val > best else 0 %}
+
+        <div class="product-card bg-white rounded-2xl shadow-card overflow-hidden flex flex-col group fade-in {% if loop.index == 1 %}cheapest-glow{% endif %}"
+          data-price="{{ best }}" data-discount="{{ discount }}" data-store="{{ product.best_store | lower }}">
+
+          {% if loop.index == 1 %}
+          <div class="bg-gradient-to-r from-green-500 to-green-600 text-white text-xs font-bold px-3 py-1 flex items-center gap-1">
+            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+            Lowest Price Available
+          </div>
+          {% endif %}
+
+          <div class="relative bg-gray-50 h-52 flex items-center justify-center overflow-hidden">
+            {% set img = product.image if product.image is defined else product.thumbnail if product.thumbnail is defined else '' %}
+            {% if img %}
+            <img src="{{ img }}" alt="{{ product.title }}" class="card-img h-44 w-auto object-contain" loading="lazy"
+              onerror="this.onerror=null;this.src='https://via.placeholder.com/200x200?text=CostShot';"/>
+            {% else %}
+            <div class="w-24 h-24 rounded-2xl bg-gray-200 flex items-center justify-center text-4xl">📦</div>
+            {% endif %}
+            {% if discount > 0 %}
+            <div class="offer-badge absolute top-3 left-3 text-white text-xs font-bold px-2.5 py-1 rounded-lg">{{ discount }}% OFF</div>
+            {% endif %}
+            {% if product.variant is defined and product.variant and product.variant != 'Base' %}
+            <div class="absolute top-3 right-3 bg-indigo-600/90 text-white text-xs font-medium px-2.5 py-1 rounded-full">{{ product.variant }}</div>
+            {% endif %}
+          </div>
+
+          <div class="flex flex-col flex-1 p-4">
+            <h3 class="font-semibold text-gray-800 text-sm leading-snug line-clamp-2 mb-3 min-h-[2.5rem]">{{ product.title }}</h3>
+            <div class="flex items-baseline gap-2 mb-1">
+              <span class="price-best font-display text-2xl font-bold">₹{{ "{:,.0f}".format(best) }}</span>
+              {% if max_price.val > best %}
+              <span class="text-gray-400 text-sm line-through">₹{{ "{:,.0f}".format(max_price.val) }}</span>
+              {% endif %}
+            </div>
+            {% if discount > 0 %}
+            <div class="flex items-center gap-1 text-green-500 text-xs font-semibold mb-3">
+              <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+              You save ₹{{ "{:,.0f}".format(max_price.val - best) }}
+            </div>
+            {% endif %}
+
+            {% if offers %}
+            <div class="space-y-1.5 mb-4 flex-1">
+              <div class="text-xs text-gray-400 font-medium mb-1">Compare across stores:</div>
+              {% for offer in offers[:3] %}
+              <div class="flex items-center justify-between bg-gray-50 hover:bg-indigo-50 rounded-xl px-3 py-2 transition group/offer">
+                <div class="flex items-center gap-2">
+                  <div class="w-2 h-2 rounded-full
+                    {% if 'amazon' in offer.store.lower() %}bg-orange-400
+                    {% elif 'flipkart' in offer.store.lower() %}bg-blue-500
+                    {% elif 'croma' in offer.store.lower() %}bg-green-500
+                    {% elif 'reliance' in offer.store.lower() %}bg-purple-500
+                    {% elif 'tata' in offer.store.lower() %}bg-teal-500
+                    {% else %}bg-gray-400{% endif %}"></div>
+                  <span class="text-gray-600 text-xs font-medium truncate max-w-[90px]" title="{{ offer.store }}">{{ offer.store }}</span>
+                  {% if offer.price == best %}
+                  <span class="bg-green-100 text-green-600 text-[10px] font-bold px-1.5 py-0.5 rounded">Best</span>
+                  {% endif %}
+                </div>
+                <a href="{{ offer.link }}" target="_blank" rel="noopener noreferrer"
+                  class="text-xs font-semibold {% if offer.price == best %}text-green-500{% else %}text-gray-700{% endif %} group-hover/offer:text-indigo-600 transition">
+                  ₹{{ "{:,.0f}".format(offer.price) }} →
+                </a>
+              </div>
+              {% endfor %}
+              {% if offers|length > 3 %}
+              <button onclick="toggleOffers(this)" class="w-full text-center text-xs text-indigo-500 hover:text-indigo-700 pt-1 transition font-medium">
+                +{{ offers|length - 3 }} more stores ▾
+              </button>
+              <div class="extra-offers hidden space-y-1.5 mt-1">
+                {% for offer in offers[3:] %}
+                <div class="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2">
+                  <span class="text-gray-600 text-xs truncate max-w-[100px]">{{ offer.store }}</span>
+                  <a href="{{ offer.link }}" target="_blank" class="text-xs font-semibold text-gray-700 hover:text-indigo-600 transition">₹{{ "{:,.0f}".format(offer.price) }}</a>
+                </div>
+                {% endfor %}
+              </div>
+              {% endif %}
+            </div>
+            {% else %}
+            <div class="flex-1 mb-3">
+              <div class="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2">
+                <div class="flex items-center gap-2">
+                  <div class="w-2 h-2 rounded-full
+                    {% if 'amazon' in (product.store|lower if product.store is defined else '') %}bg-orange-400
+                    {% elif 'flipkart' in (product.store|lower if product.store is defined else '') %}bg-blue-500
+                    {% else %}bg-gray-400{% endif %}"></div>
+                  <span class="text-gray-600 text-xs">{{ product.store if product.store is defined else 'Online Store' }}</span>
+                </div>
+                <span class="text-sm font-bold text-green-500">₹{{ "{:,.0f}".format(best) }}</span>
+              </div>
+            </div>
+            {% endif %}
+
+            {% set buy_link = product.best_link if product.best_link is defined else product.link if product.link is defined else '#' %}
+            <button
+            data-title="{{ product.title | e }}"
+            data-price="{{ best }}"
+            data-link="{{ buy_link | e }}"
+            onclick="openAlertModal(this.dataset.title, this.dataset.price, this.dataset.link)"
+            class="w-full flex items-center justify-center gap-2 border border-indigo-200 text-indigo-600 font-semibold py-2.5 rounded-xl hover:bg-indigo-50 transition text-sm mb-2"
+            >
+           <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+           <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+            </svg>
+            Set Price Alert
+            </button>
+            <a href="{{ buy_link }}" target="_blank" rel="noopener noreferrer"
+              class="block w-full text-center bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-700 hover:to-indigo-600 text-white font-semibold py-3 rounded-xl hover:shadow-glow hover:scale-[1.02] transition-all duration-200 text-sm">
+              🛒 Buy Now — ₹{{ "{:,.0f}".format(best) }}
+            </a>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      {% else %}
+      <div class="flex flex-col items-center justify-center py-24 text-center">
+        <div class="text-6xl mb-5">🔍</div>
+        <h2 class="font-display text-2xl font-bold text-gray-800 mb-2">No products found</h2>
+        <p class="text-gray-500 max-w-sm mb-6">Try a more specific search query. For example, try "iPhone 15 Pro" instead of just "iPhone".</p>
+        <form method="POST" action="/category/{{ category }}" class="w-full max-w-sm">
+          <div class="flex gap-2">
+            <input type="text" name="search" placeholder="Try another search..."
+              class="flex-1 border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition"/>
+            <button type="submit" class="bg-indigo-600 text-white px-5 py-3 rounded-xl font-semibold text-sm hover:bg-indigo-700 transition">Search</button>
+          </div>
+        </form>
+        <a href="/" class="mt-4 text-indigo-500 hover:text-indigo-700 text-sm transition">← Back to Home</a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- PRICE COMPARISON TABLE -->
+  {% if products and products[0].offers is defined and products[0].offers|length > 1 %}
+  <section class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-12">
+    <div class="bg-white rounded-2xl shadow-card overflow-hidden">
+      <div class="p-6 border-b border-gray-100">
+        <h2 class="font-display text-xl font-bold text-gray-900">Best Deal Spotlight</h2>
+        <p class="text-gray-500 text-sm mt-1">Detailed price comparison for the top result</p>
+      </div>
+      <div class="p-6">
+        {% set top = products[0] %}
+        {% set offers = top.offers %}
+        {% set best = top.best_price %}
+        <h3 class="font-semibold text-gray-800 mb-4">{{ top.title }}</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-gray-100">
+                <th class="text-left py-3 px-4 text-gray-500 font-medium">Platform</th>
+                <th class="text-right py-3 px-4 text-gray-500 font-medium">Price</th>
+                <th class="text-right py-3 px-4 text-gray-500 font-medium">vs Best Price</th>
+                <th class="text-right py-3 px-4 text-gray-500 font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for offer in offers %}
+              {% set diff = offer.price - best %}
+              <tr class="border-b border-gray-50 hover:bg-gray-50 transition {% if offer.price == best %}bg-green-50/50{% endif %}">
+                <td class="py-3 px-4">
+                  <div class="flex items-center gap-2">
+                    <div class="w-2 h-2 rounded-full
+                      {% if 'amazon' in offer.store.lower() %}bg-orange-400
+                      {% elif 'flipkart' in offer.store.lower() %}bg-blue-500
+                      {% elif 'croma' in offer.store.lower() %}bg-green-500
+                      {% else %}bg-gray-400{% endif %}"></div>
+                    <span class="font-medium text-gray-700">{{ offer.store }}</span>
+                    {% if offer.price == best %}
+                    <span class="bg-green-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">Cheapest</span>
+                    {% endif %}
+                  </div>
+                </td>
+                <td class="py-3 px-4 text-right font-bold {% if offer.price == best %}text-green-500{% else %}text-gray-800{% endif %}">
+                  ₹{{ "{:,.0f}".format(offer.price) }}
+                </td>
+                <td class="py-3 px-4 text-right text-sm">
+                  {% if diff == 0 %}
+                  <span class="text-green-500 font-semibold">Best Price ✓</span>
+                  {% else %}
+                  <span class="text-red-500">+₹{{ "{:,.0f}".format(diff) }}</span>
+                  {% endif %}
+                </td>
+                <td class="py-3 px-4 text-right">
+                  <a href="{{ offer.link }}" target="_blank" rel="noopener noreferrer"
+                    class="inline-flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition">
+                    Buy →
+                  </a>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% set max_price = namespace(val=0) %}
+        {% for o in offers %}
+          {% if o.price > max_price.val %}{% set max_price.val = o.price %}{% endif %}
+        {% endfor %}
+        {% if max_price.val > best %}
+        <div class="mt-4 bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
+          <div class="text-2xl">💰</div>
+          <div>
+            <div class="font-semibold text-green-600 text-sm">You save ₹{{ "{:,.0f}".format(max_price.val - best) }} by choosing the cheapest option!</div>
+            <div class="text-gray-500 text-xs mt-0.5">Prices update in real-time — check before buying</div>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- FOOTER -->
+  <footer class="bg-gray-900 text-gray-400 py-8 px-4">
+    <div class="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4 text-xs">
+      <div class="flex items-center gap-2">
+        <div class="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500 to-orange-500 flex items-center justify-center">
+          <span class="text-white font-bold text-xs">CS</span>
+        </div>
+        <span class="text-gray-300 font-medium">CostShot</span>
+        <span class="text-gray-600">— Compare prices, save money</span>
+      </div>
+      <div class="flex items-center gap-4">
+        <a href="/" class="hover:text-white transition">Home</a>
+        <a href="/category/mobiles" class="hover:text-white transition">Mobiles</a>
+        <a href="/category/laptops" class="hover:text-white transition">Laptops</a>
+        <a href="/category/medicine" class="hover:text-white transition">Medicine</a>
+        <div class="flex items-center gap-1 text-gray-500">
+          <span class="w-1.5 h-1.5 rounded-full bg-green-400 pulse-dot"></span>
+          Prices live
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- MOBILE STICKY CTA -->
+  {% if products %}
+  <div class="mobile-cta fixed bottom-0 left-0 right-0 z-40 p-3 bg-white border-t border-gray-100 shadow-lg">
+    {% set buy_link = products[0].best_link if products[0].best_link is defined else products[0].link if products[0].link is defined else '#' %}
+    {% set p0 = products[0].best_price if products[0].best_price is defined else (products[0].price | replace('₹', '') | replace(',', '') | float) %}
+    <a href="{{ buy_link }}" target="_blank"
+      class="block w-full text-center bg-gradient-to-r from-indigo-600 to-orange-500 text-white font-bold py-3.5 rounded-xl text-sm">
+      🔥 View Best Deal — ₹{{ "{:,.0f}".format(p0) }}
+    </a>
+  </div>
+  {% endif %}
+
+  <script>
+    function sortProducts(mode) {
+      const grid = document.getElementById('products-grid');
+      if (!grid) return;
+      const cards = Array.from(grid.querySelectorAll('[data-price]'));
+      cards.sort((a, b) => {
+        if (mode === 'price-asc')  return parseFloat(a.dataset.price) - parseFloat(b.dataset.price);
+        if (mode === 'price-desc') return parseFloat(b.dataset.price) - parseFloat(a.dataset.price);
+        if (mode === 'discount')   return parseFloat(b.dataset.discount) - parseFloat(a.dataset.discount);
+        return 0;
+      });
+      cards.forEach(c => grid.appendChild(c));
+    }
+
+    function filterByPrice(max) {
+      const fmt = new Intl.NumberFormat('en-IN');
+      document.getElementById('price-val').textContent = '₹' + fmt.format(max);
+      applyFilters();
+    }
+
+    let activeDiscount = 0;
+    function filterByDiscount(d) {
+      activeDiscount = d;
+      applyFilters();
+    }
+
+    function applyFilters() {
+      const maxPrice = parseFloat(document.getElementById('price-range')?.value || 999999);
+      const checkedPlatforms = Array.from(document.querySelectorAll('.platform-check:checked')).map(i => i.value.toLowerCase());
+      const cards = document.querySelectorAll('[data-price]');
+      let visible = 0;
+      cards.forEach(card => {
+        const price    = parseFloat(card.dataset.price);
+        const discount = parseFloat(card.dataset.discount);
+        const store    = (card.dataset.store || '').toLowerCase();
+        const ok = price <= maxPrice && discount >= activeDiscount &&
+          (checkedPlatforms.length === 0 || checkedPlatforms.some(p => store.includes(p)));
+        card.style.display = ok ? '' : 'none';
+        if (ok) visible++;
+      });
+      const countEl = document.getElementById('result-count');
+      if (countEl) countEl.textContent = visible;
+    }
+
+    function clearFilters() {
+      document.querySelectorAll('.platform-check').forEach(c => c.checked = false);
+      const rangeEl = document.getElementById('price-range');
+      if (rangeEl) { rangeEl.value = rangeEl.max; filterByPrice(rangeEl.max); }
+      activeDiscount = 0;
+      applyFilters();
+    }
+
+    function toggleOffers(btn) {
+      const container = btn.nextElementSibling;
+      if (container && container.classList.contains('extra-offers')) {
+        container.classList.toggle('hidden');
+        btn.textContent = container.classList.contains('hidden')
+          ? btn.textContent.replace('▴', '▾')
+          : btn.textContent.replace('▾', '▴');
+      }
+    }
+
+    function setView(mode) {
+      const grid = document.getElementById('products-grid');
+      if (!grid) return;
+      document.getElementById('btn-grid')?.classList.remove('bg-indigo-50', 'border-indigo-300');
+      document.getElementById('btn-list')?.classList.remove('bg-indigo-50', 'border-indigo-300');
+      if (mode === 'grid') {
+        grid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5';
+        document.getElementById('btn-grid')?.classList.add('bg-indigo-50', 'border-indigo-300');
+      } else {
+        grid.className = 'flex flex-col gap-4';
+        document.getElementById('btn-list')?.classList.add('bg-indigo-50', 'border-indigo-300');
+      }
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((e, i) => {
+        if (e.isIntersecting) {
+          e.target.style.transition = `opacity 0.4s ease ${i*0.05}s, transform 0.4s ease ${i*0.05}s`;
+          e.target.style.opacity = '1';
+          e.target.style.transform = 'translateY(0)';
+          observer.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.08 });
+
+    document.querySelectorAll('.product-card').forEach(card => {
+      card.style.opacity = '0';
+      card.style.transform = 'translateY(20px)';
+      observer.observe(card);
+    });
+  </script>
+<div
+  id="alert-modal"
+  class="hidden fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm items-center justify-center px-4"
+>
+  <div
+    id="modal-inner"
+    class="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 scale-95 opacity-0 transition-all duration-200"
+  >
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-gray-900 text-lg" style="font-family:Syne">🔔 Set Price Alert</h3>
+      <button onclick="closeAlertModal()" class="text-gray-400 hover:text-gray-600 text-xl transition">✕</button>
+    </div>
+
+    <!-- Product -->
+    <div class="bg-gray-50 rounded-2xl p-3 mb-4">
+      <div class="font-semibold text-gray-800 text-sm line-clamp-2" id="modal-product-title"></div>
+      <div class="text-gray-500 text-xs mt-1">Current best price: <span class="font-bold text-green-600" id="modal-current-price"></span></div>
+    </div>
+
+    <!-- Target price input -->
+    <label class="block text-sm font-semibold text-gray-700 mb-2">Notify me when price drops to:</label>
+    <div class="relative mb-4">
+      <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-bold">₹</span>
+      <input
+        type="number"
+        id="modal-target-price"
+        placeholder="Enter target price"
+        class="w-full border-2 border-gray-200 rounded-xl pl-8 pr-4 py-3 text-lg font-bold text-gray-900 focus:outline-none focus:border-indigo-500 transition"
+        min="1"
+      />
+    </div>
+
+    <!-- Info -->
+    <p class="text-xs text-gray-400 mb-4 text-center">
+      We'll send a browser notification when the price drops to your target. No app required.
+    </p>
+
+    <!-- Buttons -->
+    <div class="flex gap-3">
+      <button
+        onclick="closeAlertModal()"
+        class="flex-1 border border-gray-200 text-gray-600 font-semibold py-3 rounded-xl hover:bg-gray-50 transition text-sm"
+      >
+        Cancel
+      </button>
+      <button
+        onclick="confirmAlert()"
+        class="flex-1 bg-gradient-to-r from-indigo-600 to-indigo-500 text-white font-semibold py-3 rounded-xl hover:shadow-lg hover:scale-[1.02] transition text-sm"
+      >
+        Set Alert 🔔
+      </button>
+    </div>
+  </div>
+</div>
+</body>
+</html>
+```
+
