@@ -97,10 +97,10 @@ class Category:
         self.require = tuple(require)
 
     def build_query(self, term=""):
-        term = (term or "").strip()
-        if not term:
-            return self.base_query
-        return self.query_template.format(term=term).strip()
+      term = (term or "").strip()
+      if not term:
+        return self.base_query
+      return term
 
 
 CATEGORIES = {
@@ -108,8 +108,8 @@ CATEGORIES = {
     "mobiles": Category(
         slug="mobiles",
         label="Mobiles",
-        base_query="latest smartphone price India",
-        query_template="{term} smartphone price India",
+        base_query="smartphone",
+        query_template="{term}",
         signals=(
             "smartphone", "mobile phone", "cellphone", "iphone", "galaxy",
             "redmi", "realme", "oneplus", "vivo", "oppo", "poco", "pixel",

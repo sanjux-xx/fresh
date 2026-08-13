@@ -622,35 +622,55 @@ def _get(url, **kw):
         return None
 
 
-def open_phish():
-    """The OpenPhish community feed as a set of URLs and hostnames."""
+def _fetch_phish():
+    r = _get("https://openphish.com/feed.txt", timeout=_FEED_TIMEOUT)
     now = time.time()
-    with _lock:
-        if _phish_cache["set"] is not None and now - _phish_cache["ts"] < _PHISH_TTL:
-            return _phish_cache["set"]
-
-    r = _get("https://openphish.com/feed.txt", timeout=8)
     if r is None:
-        return None
+        with _lock:
+            _phish_cache["fail_ts"] = now
+            _phish_cache["loading"] = False
+        return
 
     s = set()
     for line in r.text.split("\n"):
         u = line.strip()
         if not u:
             continue
-        s.add(u)
-        s.add(u.rstrip("/"))
         try:
-            h = urlsplit(u).hostname
+            h = urlparse(u).hostname or ""
             if h:
-                s.add(h.lower())
+                s.add(h)
+            s.add(u)
         except Exception:
             pass
 
     with _lock:
         _phish_cache["ts"] = now
         _phish_cache["set"] = s
-    return s
+        _phish_cache["fail_ts"] = 0.0
+        _phish_cache["loading"] = False
+
+
+def open_phish():
+    now = time.time()
+    with _lock:
+        cached = _phish_cache["set"]
+        if cached is not None and now - _phish_cache["ts"] < _PHISH_TTL:
+            return cached
+        if now - _phish_cache.get("fail_ts", 0.0) < _PHISH_FAIL_TTL:
+            return cached
+        if _phish_cache.get("loading"):
+            return cached
+        _phish_cache["loading"] = True
+
+    try:
+        threading.Thread(target=_fetch_phish, daemon=True).start()
+    except Exception:
+        with _lock:
+            _phish_cache["loading"] = False
+
+    with _lock:
+        return _phish_cache["set"]
 
 
 def gsb_batch(urls):
@@ -892,14 +912,7 @@ def _unresolved_result(url, store, host):
     }
 
 
-def score_urls(items, deep=False, use_ai=False):
-    """Score a batch of listings.
-
-    items: list of URL strings, or list of {"url": ..., "store": ...} dicts.
-    Returns {original_url: result_dict}. Never raises — a listing that cannot
-    be scored comes back with score None and is treated as untrusted by the
-    caller only if REQUIRE_SCORE is set.
-    """
+def _normalize_items(items):
     norm = []
     for it in items:
         if isinstance(it, dict):
@@ -911,6 +924,28 @@ def score_urls(items, deep=False, use_ai=False):
         if not isinstance(store, str):
             store = str(store)
         norm.append((url, store))
+    return norm
+
+
+def score_many(items, deep=False):
+    norm = _normalize_items(items)
+    score_urls(items, deep=deep)
+    results = []
+    for url, store in norm:
+        k = _cache_key(url, store, deep)
+        with _lock:
+            hit = _result_cache.get(k)
+        res = dict(hit["res"]) if hit else dict(NO_LINK_RESULT)
+        res["url"], res["store"] = url, store
+        results.append(res)
+    return results
+
+
+def score_urls(items, deep=False, use_ai=False):
+    """Score a batch of listings.
+
+    
+    norm = _normalize_items(items)
 
     out = {}
     todo = []
@@ -943,18 +978,14 @@ def score_urls(items, deep=False, use_ai=False):
             if alt:
                 p = parse_input(alt)
                 p["via_store_name"] = True
-        # Only fall back to the store name when there is NO link at all. A
-        # link that is present but unparseable (javascript:, data:, garbage)
-        # means the listing is broken or hostile — scoring its store name
-        # instead would launder it into a passing score.
+            else:
+                p = {"valid": False, "unresolved": True,
+                     "host": (p["url"].hostname or "").lower()}
         if not p["valid"] and store and not (target or "").strip():
             alt = _store_fallback_url(store)
             if alt:
                 p = parse_input(alt)
                 p["via_store_name"] = True
-            else:
-                p = {"valid": False, "unresolved": True,
-                     "host": (p["url"].hostname or "").lower()}
         parsed_map[k] = p
         if p["valid"]:
             hrefs.append(p["href"])

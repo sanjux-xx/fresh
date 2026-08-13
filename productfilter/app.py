@@ -43,15 +43,39 @@ TRUSTED_STORES = [
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 
+_SECRET_QS_RE = re.compile(
+    r"((?:api_key|serp_api_key|apikey|key|token|access_token|secret|password)"
+    r"=)[^&\s\"'<>]+", re.IGNORECASE)
+_SECRET_HDR_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+", re.IGNORECASE)
+
+def _scrub_text(value):
+    if not isinstance(value, str):
+        return value
+    value = _SECRET_QS_RE.sub(r"\1[REDACTED]", value)
+    return _SECRET_HDR_RE.sub(r"\1[REDACTED]", value)
+
+def _scrub_event(node):
+    if isinstance(node, dict):
+        return {k: _scrub_event(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_scrub_event(v) for v in node]
+    if isinstance(node, tuple):
+        return tuple(_scrub_event(v) for v in node)
+    return _scrub_text(node)
+
+def _before_send(event, hint):
+    try:
+        return _scrub_event(event)
+    except Exception:
+        return None
+
 sentry_sdk.init(
     dsn=os.getenv("SENTRY_DSN"),
     integrations=[FlaskIntegration()],
     traces_sample_rate=0.2,
-     send_default_pii=False,
-    # SystemExit is raised by gunicorn's handle_abort when the master sends
-    # SIGABRT to a worker that timed out on an idle client connection.
-    # This is expected gunicorn behaviour, not an application error.
-    ignore_errors=[SystemExit],
+    send_default_pii=False,
+    before_send=_before_send,
+    before_send_transaction=_before_send,
 )
 
 # ===============================
@@ -234,17 +258,21 @@ def extract_price(p):
 MIN_QUERY_LEN = 3
 MAX_QUERY_LEN = 100
 
+SERPAPI_NUM = int(os.getenv("SERPAPI_NUM", "60"))
 PRICE_SANITY_RATIO = float(os.getenv("PRICE_SANITY_RATIO", "0.25"))
-
 
 def drop_implausible_prices(products, price_of=extract_price):
     if len(products) < 4:
         return products, 0
+
     priced = [(p, price_of(p)) for p in products]
     values = sorted(v for _, v in priced if v not in (None, float("inf")) and v > 0)
     if len(values) < 4:
         return products, 0
-    floor = values[len(values) // 2] * PRICE_SANITY_RATIO
+
+    median = values[len(values) // 2]
+    floor = median * PRICE_SANITY_RATIO
+
     kept = [p for p, v in priced
             if v in (None, float("inf")) or v <= 0 or v >= floor]
     return kept, len(products) - len(kept)
@@ -450,11 +478,11 @@ def _score_listings(listings):
     if not trustscan.ENABLED or not listings:
         return listings
 
-    scored = trustscan.score_urls(
-        [{"url": l.get("link", ""), "store": l.get("store", "")} for l in listings],
-        deep=DEEP_TRUST,
-    )
-    results = list(scored.values())
+    results = trustscan.score_many(
+    [{"url": l.get("link", ""), "store": l.get("store", "")} for l in listings],
+    deep=DEEP_TRUST,
+   )
+    
 
     try:
         ai_helper.tiebreak(results)
@@ -462,8 +490,7 @@ def _score_listings(listings):
     except Exception as e:
         sentry_sdk.capture_exception(e)
 
-    for l in listings:
-        t = scored.get(l.get("link", "")) or {}
+    for l, t in zip(listings, results):
         # verdict falls back to the heuristic sentence when AI is off
         t.setdefault("verdict", trustscan.default_verdict(t))
         l["trust"] = t
@@ -843,7 +870,8 @@ def category_page(category_name):
     final_query = cat.build_query(search_term)
 
     products = get_product_prices(final_query, scope=cat.slug)
-    products, _ = drop_implausible_prices(products)
+    upstream_count = len(products)
+    products, implausible = drop_implausible_prices(products)
 
     # THE FIX: every category is filtered against its own rules, and the
     # shopper's search term, before anything else runs. Nothing falls back to
@@ -871,6 +899,8 @@ def category_page(category_name):
         hidden=hidden,
         searched=request.method == "POST",
         off_category=off_category,
+        upstream_count=upstream_count,
+        implausible=implausible,
         min_score=trustscan.MIN_SCORE,
     )
 
