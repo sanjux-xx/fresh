@@ -74,8 +74,40 @@ header{position:sticky;top:0;z-index:50;background:rgba(250,248,242,.92);backdro
 /* Ellipsis needs a real element: a bare text node inside a flex container
    becomes an anonymous flex item and cannot be truncated. */
 .brand-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.back{flex-shrink:0;white-space:nowrap;font-size:.9rem;font-weight:500;color:var(--ink-soft);padding:8px 12px;border-radius:8px}
-.back:hover{background:var(--marigold-soft);color:var(--ink)}
+.back{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  height:40px;
+  padding:0 14px;
+  flex-shrink:0;
+  border-radius:12px;
+  border:1.5px solid var(--line);
+  background:var(--paper-raised);
+  color:var(--ink-soft);
+  font-size:.86rem;
+  font-weight:600;
+  white-space:nowrap;
+  transition:border-color .15s,color .15s,transform .15s;
+}
+
+.back svg{
+  width:15px;
+  height:15px;
+  flex-shrink:0;
+}
+
+.back:hover{
+  border-color:var(--ink);
+  color:var(--ink);
+  transform:translateY(-1px);
+}
+
+@media(max-width:860px){
+  .back .lbl{display:none}
+  .back{width:40px;padding:0}
+}
 .navright{display:flex;align-items:center;gap:10px;flex-shrink:0}
 
 .cat-hero{padding:40px 0 28px;border-bottom:1px solid var(--line);position:relative;overflow:hidden}
@@ -96,7 +128,38 @@ header{position:sticky;top:0;z-index:50;background:rgba(250,248,242,.92);backdro
   100%{box-shadow:0 0 0 0 transparent}
 }
 50%{opacity:.35}}
+.cat-switch{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:18px;
+}
 
+.cat-switch .cs{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:7px 13px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  background:var(--paper-raised);
+  font-size:.85rem;
+  font-weight:500;
+  color:var(--ink-soft);
+  transition:border-color .15s,color .15s,background .15s;
+}
+
+.cat-switch .cs:hover{
+  border-color:var(--accent);
+  color:var(--ink);
+}
+
+.cat-switch .cs.on{
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#fff;
+  font-weight:600;
+}
 .search-bar{padding:24px 0 6px}
 .search{display:flex;align-items:center;background:var(--paper-raised);border:2px solid var(--ink);border-radius:999px;padding:6px;box-shadow:4px 4px 0 var(--ink);max-width:680px;margin:0 auto;transition:box-shadow .15s,transform .15s}
 .search:focus-within{transform:translate(-1px,-1px);box-shadow:6px 6px 0 var(--ink)}
