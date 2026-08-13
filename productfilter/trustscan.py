@@ -605,8 +605,9 @@ _lock = threading.Lock()
 _phish_cache = {"ts": 0.0, "set": None}
 _domain_cache = {}          # registrable -> {"ts": float, "data": dict}
 _PHISH_TTL = 10 * 60
+_PHISH_FAIL_TTL = 60
 _DOMAIN_TTL = 24 * 3600
-_TIMEOUT = 6
+FEED_TIMEOUT = 6
 
 FEEDS_ENABLED = os.getenv("TRUSTSCAN_FEEDS", "1") not in ("0", "false", "False")
 
@@ -615,7 +616,7 @@ def _get(url, **kw):
     if requests is None or not FEEDS_ENABLED:
         return None
     try:
-        kw.setdefault("timeout", _TIMEOUT)
+        kw.setdefault("timeout", FEED_TIMEOUT)
         r = requests.get(url, **kw)
         return r if r.status_code == 200 else None
     except Exception:
@@ -623,7 +624,7 @@ def _get(url, **kw):
 
 
 def _fetch_phish():
-    r = _get("https://openphish.com/feed.txt", timeout=_FEED_TIMEOUT)
+    r = _get("https://openphish.com/feed.txt", timeout=FEED_TIMEOUT)
     now = time.time()
     if r is None:
         with _lock:
@@ -694,7 +695,7 @@ def gsb_batch(urls):
                     "threatEntries": [{"url": u} for u in urls],
                 },
             },
-            timeout=_TIMEOUT,
+            timeout=FEED_TIMEOUT,
         )
         if r.status_code != 200:
             return None
