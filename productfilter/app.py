@@ -640,6 +640,42 @@ MERCHANT_TTL = int(os.getenv("MERCHANT_TTL", str(6 * 60 * 60)))
 MERCHANT_TIMEOUT = float(os.getenv("MERCHANT_TIMEOUT", "15"))
 
 PRODUCT_ID_RE = re.compile(r"^[0-9]{1,32}$")
+# Crawlers and link previewers must never trigger a resolve.
+#
+# Every /go click costs a SerpApi credit. Category pages are plain GET pages
+# carrying ~80 /go links each, so a single Googlebot pass over /category/mobiles
+# would spend ~80 credits, and it would do that for every category, on every
+# crawl, silently. Chat apps and browsers that prefetch links are the same
+# problem in miniature. Before this change the links pointed at google.com and
+# cost nothing to follow, so the crawl budget question simply did not exist.
+#
+# Bots get the Google Shopping fallback: a working destination, zero credits.
+# robots.txt, rel="nofollow" and X-Robots-Tag cover the well-behaved ones;
+# this list catches the rest.
+BOT_UA_RE = re.compile(
+    r"bot|crawler|spider|crawling|slurp|bingpreview|facebookexternalhit|"
+    r"whatsapp|telegrambot|slackbot|discordbot|twitterbot|linkedinbot|"
+    r"embedly|quora link preview|pinterest|redditbot|applebot|ia_archiver|"
+    r"semrush|ahrefs|mj12|dotbot|petalbot|yandex|duckduckbot|headlesschrome|"
+    r"python-requests|curl/|wget|go-http-client|axios|okhttp|java/",
+    re.IGNORECASE,
+)
+
+def _is_automated_client():
+    """True for crawlers, previewers and prefetchers — anything but a shopper.
+
+    Also treats an explicit prefetch/prerender hint as automated: the browser
+    is guessing, and a guess must not cost a credit.
+    """
+    ua = request.headers.get("User-Agent", "")
+    if not ua or BOT_UA_RE.search(ua):
+        return True
+    purpose = (
+        request.headers.get("Sec-Purpose", "")
+        or request.headers.get("Purpose", "")
+        or request.headers.get("X-Purpose", "")
+    )
+    return "prefetch" in purpose.lower() or "preview" in purpose.lower()
 
 
 def _prune_merchant_routes():
@@ -1239,6 +1275,11 @@ def go_to_merchant(product_id):
     if not PRODUCT_ID_RE.match(product_id):
         return redirect("/", code=302)
 
+    google_product = "https://www.google.com/shopping/product/" + product_id
+
+    if _is_automated_client():
+      return redirect(google_product, code=302)
+
     entry = merchant_routes.get(product_id)
 
     if not entry:
@@ -1258,8 +1299,7 @@ def go_to_merchant(product_id):
         # Nothing left to resolve with. Send the shopper to the Google
         # Shopping page for this exact product — the behaviour before this
         # change — rather than dumping them on the homepage.
-        return redirect(
-            "https://www.google.com/shopping/product/" + product_id, code=302)
+        return redirect(google_product, code=302)
 
     fallback = trustscan.safe_link(entry.get("fallback", ""))
     fallback = fallback if fallback != "#" else "/"
@@ -1480,7 +1520,12 @@ def add_headers(resp):
     # Only meaningful over TLS, and only safe to send when the site is
     # actually HTTPS-only. Enabled by default in production.
     if os.getenv("ENABLE_HSTS", "1") in ("1", "true", "True"):
-        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+     resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    if request.path.startswith("/go/"):
+     resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+
+# script-src is strict: no 'unsafe-inline', no external script hosts.
 
     # script-src is strict: no 'unsafe-inline', no external script hosts. All
     # page behaviour lives in /static/js/productfilter.js, so an injected <script>
