@@ -5,6 +5,7 @@ import os
 import ipaddress
 import time
 import logging
+import threading
 from collections import defaultdict
 from urllib.parse import urlsplit, urlunsplit, quote
 
@@ -157,13 +158,16 @@ query_counter = defaultdict(list)
 MAX_CACHE_ENTRIES = int(os.getenv("MAX_CACHE_ENTRIES", "500"))
 MAX_TRACKED_IPS = int(os.getenv("MAX_TRACKED_IPS", "10000"))
 
+_state_lock = threading.RLock()
 
 def _prune_cache():
-    """Drop the oldest entries once the price cache exceeds its ceiling."""
-    if len(cache) <= MAX_CACHE_ENTRIES:
-        return
-    for key in sorted(cache, key=lambda k: cache[k][1])[:len(cache) - MAX_CACHE_ENTRIES]:
-        cache.pop(key, None)
+    with _state_lock:
+        if len(cache) <= MAX_CACHE_ENTRIES:
+            return
+        items = [(k, v[1]) for k, v in list(cache.items())]
+        items.sort(key=lambda kv: kv[1])
+        for key, _ in items[:len(items) - MAX_CACHE_ENTRIES]:
+            cache.pop(key, None)
 
 
 def _prune_ip_tables(now):
