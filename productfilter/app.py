@@ -234,6 +234,20 @@ def extract_price(p):
 MIN_QUERY_LEN = 3
 MAX_QUERY_LEN = 100
 
+PRICE_SANITY_RATIO = float(os.getenv("PRICE_SANITY_RATIO", "0.25"))
+
+
+def drop_implausible_prices(products, price_of=extract_price):
+    if len(products) < 4:
+        return products, 0
+    priced = [(p, price_of(p)) for p in products]
+    values = sorted(v for _, v in priced if v not in (None, float("inf")) and v > 0)
+    if len(values) < 4:
+        return products, 0
+    floor = values[len(values) // 2] * PRICE_SANITY_RATIO
+    kept = [p for p, v in priced
+            if v in (None, float("inf")) or v <= 0 or v >= floor]
+    return kept, len(products) - len(kept)
 
 def is_valid_query(q):
     if not q:
@@ -543,6 +557,12 @@ def get_product_prices(query, scope=""):
         "location": "India",
         "hl":       "en",
         "gl":       "in",
+        # Resolve the merchant's own URL instead of the google.com/search
+        # redirect. Without this every listing arrives as a Google link, so
+        # there is no merchant to trust-score.
+        "direct_link": "true",
+        # More rows for the same one API call.
+        "num":      "60",
         "api_key":  os.getenv("SERPAPI_KEY")
     }
 
@@ -553,7 +573,9 @@ def get_product_prices(query, scope=""):
         for item in results.get("shopping_results", []):
             title = item.get("title", "")
             link  = (
-                item.get("link")
+                item.get("direct_link")
+                or item.get("merchant_link")
+                or item.get("link")
                 or item.get("product_link")
                 or "https://www.google.com/search?tbm=shop&q=" + re.sub(r"\s+", "+", title)
             )
@@ -719,6 +741,7 @@ def index():
             slug = category_rules.detect_category(search_query)
 
             raw = get_product_prices(search_query, scope=slug or "")
+            raw, _ = drop_implausible_prices(raw)
 
             if slug:
                 filtered, _ = step1_category_filter(raw, slug, search_query)
@@ -820,6 +843,7 @@ def category_page(category_name):
     final_query = cat.build_query(search_term)
 
     products = get_product_prices(final_query, scope=cat.slug)
+    products, _ = drop_implausible_prices(products)
 
     # THE FIX: every category is filtered against its own rules, and the
     # shopper's search term, before anything else runs. Nothing falls back to

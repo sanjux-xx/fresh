@@ -868,6 +868,29 @@ def _store_fallback_url(store):
 def _is_redirect_host(host):
     return any(host == h or host.endswith("." + h) for h in REDIRECT_HOSTS)
 
+UNRESOLVED_SCORE = int(os.getenv("TRUSTSCAN_UNRESOLVED_SCORE", "55"))
+
+def _unresolved_result(url, store, host):
+    """Result for 'we genuinely could not tell who this merchant is'.
+
+    SerpApi returns google.com/search redirects for most listings. The old
+    code saw the redirect host, failed to map the store name, then fell
+    through to scoring google.com — which is in KNOWN_GOOD_DOMAINS. So every
+    unknown shop rendered as "96 - Verified major retailer".
+    """
+    score = int(clamp(UNRESOLVED_SCORE, 0, MAX_SCORE))
+    return {
+        "url": url, "store": store, "valid": True, "host": host, "domain": "",
+        "score": score, "risk": risk_of(score),
+        "badge": "watch" if score >
+        MIN_SCORE else "risk",
+        "listed": False, "listed_by": [],
+        "flags": ["Merchant not identified — the link goes via Google Shopping"],
+        "known_good": False, "via_store_name": False, "unresolved_merchant": True,
+        "verdict": ("We could not confirm which shop this is — the link goes "
+                    "through Google Shopping rather than to a named seller."),
+    }
+
 
 def score_urls(items, deep=False, use_ai=False):
     """Score a batch of listings.
@@ -929,6 +952,9 @@ def score_urls(items, deep=False, use_ai=False):
             if alt:
                 p = parse_input(alt)
                 p["via_store_name"] = True
+            else:
+                p = {"valid": False, "unresolved": True,
+                     "host": (p["url"].hostname or "").lower()}
         parsed_map[k] = p
         if p["valid"]:
             hrefs.append(p["href"])
@@ -951,6 +977,12 @@ def score_urls(items, deep=False, use_ai=False):
     # 4. score
     for url, store, k in todo:
         p = parsed_map[k]
+        if not p["valid"] and p.get("unresolved"):
+            res = _unresolved_result(url, store, p.get("host", ""))
+            out[url] = res
+            with _lock:
+                _result_cache[k] = {"ts": now, "res": dict(res)}
+            continue
         if not p["valid"]:
             res = {
                 "url": url, "store": store, "valid": False,
