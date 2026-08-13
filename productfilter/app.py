@@ -107,14 +107,22 @@ app.register_blueprint(food_bp)
 # Defence in depth for templates: |safe_url renders only plain http(s)
 # addresses and collapses anything else (javascript:, data:, file:) to "#".
 app.jinja_env.filters["safe_url"] = trustscan.safe_link
+
+
 def buy_url(url):
-    """Allow internal /go routes while keeping safe_url protection."""
+    """|buy_url renders a Buy target: our own /go route, or a plain http(s).
+
+    safe_url exists to collapse anything that is not an absolute http(s)
+    address, which is right for feed links but would also collapse the
+    relative /go/<id> path this app generates. This filter permits exactly
+    that one internal shape — a literal /go/ followed by digits — and hands
+    everything else to safe_url unchanged.
+    """
     if isinstance(url, str) and re.match(
-        r"^/go/[0-9]{1,32}(\?[A-Za-z0-9%._~=&+-]{0,300})?$",
-        url.strip(),
-    ):
+            r"^/go/[0-9]{1,32}(\?[A-Za-z0-9%._~=&+-]{0,300})?$", url.strip()):
         return url.strip()
     return trustscan.safe_link(url)
+
 
 app.jinja_env.filters["buy_url"] = buy_url
 
@@ -452,18 +460,20 @@ def step3_compare_products(products):
                 "variant": p.get("variant", "Base"),
                 "best_price": price,
                 "best_store": p.get("store", ""),
-               "best_link": p.get("link", ""),
-               "best_go": p.get("go_link") or p.get("link", ""),
+                "best_link": p.get("link", ""),
+                # Click target for the Buy button: the /go route that resolves
+                # the merchant URL. Falls back to the Google link.
+                "best_go": p.get("go_link") or p.get("link", ""),
                 "image": p.get("image", ""),
                 "offers": []
             }
 
         grouped[key]["offers"].append({
-        "store": p.get("store", ""),
-       "price": price,
-       "link": p.get("link", ""),
-       "go_link": p.get("go_link") or p.get("link", ""),
-         })
+            "store": p.get("store", ""),
+            "price": price,
+            "link": p.get("link", ""),
+            "go_link": p.get("go_link") or p.get("link", ""),
+        })
 
     for product in grouped.values():
         preferred = []
@@ -486,7 +496,8 @@ def step3_compare_products(products):
             product["best_price"] = best["price"]
             product["best_store"] = best["store"]
             product["best_link"] = best["link"]
-            product["best_go"] = best["go_link"] or best["link"]
+            product["best_go"] = best.get("go_link") or best["link"]
+            
 
     return list(grouped.values())
 
@@ -589,10 +600,240 @@ def apply_trust_grouped(products):
         p["best_price"] = best["price"]
         p["best_store"] = best["store"]
         p["best_link"] = best["link"]
+        p["best_go"] = best.get("go_link") or best["link"]
         p["trust"] = best.get("trust", {})
         kept_products.append(p)
 
     return kept_products, _hidden_summary(dropped)
+
+
+# ===============================
+# MERCHANT LINK RESOLUTION
+# ===============================
+# google_shopping hands back a google.com/search?ibp=oshop link and nothing
+# else, so a shopper who clicks lands on Google Shopping rather than on the
+# store. Each row does carry an `immersive_product_page_token`, and the
+# google_immersive_product engine turns that token into
+# `product_results.stores[]`, where every entry has the merchant's own URL.
+#
+# That second call is a separate billable SerpApi search, so it is made
+# lazily: the feed renders with /go/<product_id> links, and the resolve only
+# happens when someone actually clicks. One credit per real click, not per
+# rendered card.
+
+# product_id -> {token, store, fallback, resolved, resolved_store, ts, hit}
+merchant_routes = {}
+
+MAX_MERCHANT_ROUTES = int(os.getenv("MAX_MERCHANT_ROUTES", "5000"))
+# Resolved merchant URLs are cached for longer than the price feed: the URL
+# of a product page is far more stable than its price, and every cache miss
+# costs a credit.
+MERCHANT_TTL = int(os.getenv("MERCHANT_TTL", str(6 * 60 * 60)))
+# A click is a person waiting on a redirect, so the resolve gets a leash.
+# On timeout the shopper goes to the Google link rather than staring at a
+# spinner. This has to clear the slowest case that still succeeds: a token
+# SerpApi has never fetched before takes several seconds, while a token it
+# has cached comes back in under a second. Measured against live traffic, 6s
+# was cutting off cold tokens that would have resolved fine. It also has to
+# stay under gunicorn's 30s worker timeout, or a slow resolve kills a worker
+# instead of falling back.
+MERCHANT_TIMEOUT = float(os.getenv("MERCHANT_TIMEOUT", "15"))
+
+PRODUCT_ID_RE = re.compile(r"^[0-9]{1,32}$")
+
+
+def _prune_merchant_routes():
+    """Drop the oldest routes once the table exceeds its ceiling.
+
+    Same reasoning as _prune_cache: this dict is keyed by data that an
+    anonymous caller can cause to appear, so it needs a hard ceiling or it is
+    a slow memory exhaustion bug.
+    """
+    if len(merchant_routes) <= MAX_MERCHANT_ROUTES:
+        return
+    doomed = sorted(merchant_routes, key=lambda k: merchant_routes[k]["ts"])
+    for key in doomed[:len(merchant_routes) - MAX_MERCHANT_ROUTES]:
+        merchant_routes.pop(key, None)
+
+
+def merchant_route_path(product_id, query="", scope=""):
+    """Build the /go path, carrying the query that can rebuild the route.
+
+    This table lives in process memory and gunicorn runs more than one
+    worker, so the worker that serves the click is often not the worker that
+    served the search and will not know this product_id. Carrying the
+    original query means that worker can re-run the (cached) feed search,
+    repopulate the table and resolve normally, instead of stranding the
+    shopper. Without this, roughly one click in `workers` would dead-end.
+    """
+    path = "/go/" + product_id
+    params = []
+    if query:
+        params.append("q=" + quote(query[:MAX_QUERY_LEN], safe=""))
+    if scope:
+        params.append("s=" + quote(scope[:40], safe=""))
+    return path + ("?" + "&".join(params) if params else "")
+
+
+def remember_merchant_route(product_id, token, store, fallback,
+                            query="", scope=""):
+    """Record how to resolve one listing. Returns the /go path, or "".
+
+    Returns "" when the row cannot be resolved (no id, no token, junk id), so
+    the caller keeps using the plain Google link for that listing.
+    """
+    if not product_id or not token:
+        return ""
+    product_id = str(product_id).strip()
+    if not PRODUCT_ID_RE.match(product_id):
+        return ""
+    if not isinstance(token, str) or not token.strip():
+        return ""
+
+    entry = merchant_routes.get(product_id)
+    # Keep an already-resolved URL rather than throwing it away every time
+    # the same product reappears in a later feed.
+    resolved = entry.get("resolved") if entry else None
+    resolved_store = entry.get("resolved_store", "") if entry else ""
+    resolved_ts = entry.get("resolved_ts", 0) if entry else 0
+
+    merchant_routes[product_id] = {
+        "token": token,
+        "store": store or "",
+        "fallback": fallback or "",
+        "resolved": resolved,
+        "resolved_store": resolved_store,
+        "resolved_ts": resolved_ts,
+        "ts": time.time(),
+    }
+    _prune_merchant_routes()
+    return merchant_route_path(product_id, query, scope)
+
+
+def _prefer_https(url):
+    """Upgrade a merchant URL to https.
+
+    Google hands some merchant links back as plain http — Flipkart and Myntra
+    both did in a live audit. TrustScan rightly treats plain HTTP as a red
+    flag on a page where someone is about to pay, so those listings scored 38
+    and 97 respectively for the same domain depending only on the scheme, and
+    two of India's largest retailers were being shown a scam warning. The
+    scheme is an artefact of the feed, not a property of the store: the same
+    Flipkart URL scores 96 over https.
+
+    Every merchant that reaches this point is a Google Shopping advertiser
+    and serves https; an http-only store in 2026 is exactly the kind of site
+    the warning is meant for, and it will still be scored on its merits after
+    the upgrade.
+    """
+    if isinstance(url, str) and url.startswith("http://"):
+        return "https://" + url[len("http://"):]
+    return url
+
+
+def _pick_store(stores, preferred):
+    """Choose which of a product's sellers to send the shopper to.
+
+    Prefers the seller whose name matches the one shown on the card — the
+    shopper clicked a specific store at a specific price, and landing on a
+    different merchant is a bait and switch. Falls back to the cheapest
+    seller that has a usable link, then to the first one.
+    """
+    usable = []
+    for s in stores or []:
+        if not isinstance(s, dict):
+            continue
+        link = trustscan.safe_link(normalize_feed_link(s.get("link", "")))
+        if link == "#":
+            continue
+        usable.append((s, _prefer_https(link)))
+
+    if not usable:
+        return None, ""
+
+    want = (preferred or "").strip().lower()
+    if want:
+        for s, link in usable:
+            name = (s.get("name") or "").strip().lower()
+            if name and (name == want or name in want or want in name):
+                return link, s.get("name") or preferred
+
+    def _price_of(pair):
+        s = pair[0]
+        for field in ("extracted_price", "extracted_base_price"):
+            v = s.get(field)
+            if isinstance(v, (int, float)) and v > 0:
+                return float(v)
+        return extract_price({"price": s.get("price") or s.get("base_price") or ""})
+
+    cheapest = min(usable, key=_price_of)
+    return cheapest[1], cheapest[0].get("name") or ""
+
+
+def resolve_merchant_link(product_id):
+    """Turn a remembered listing into (merchant_url, store_name).
+
+    Returns (None, "") when the listing is unknown or cannot be resolved.
+    Cached for MERCHANT_TTL so repeat clicks on the same product — the common
+    case when a page is shared — cost nothing.
+    """
+    entry = merchant_routes.get(product_id)
+    if not entry:
+        return None, ""
+
+    now = time.time()
+    if entry.get("resolved") and now - entry.get("resolved_ts", 0) < MERCHANT_TTL:
+        return entry["resolved"], entry.get("resolved_store", "")
+
+    params = {
+        "engine":     "google_immersive_product",
+        "page_token": entry["token"],
+        "hl":         "en",
+        "gl":         "in",
+        "api_key":    os.getenv("SERPAPI_KEY"),
+    }
+
+    try:
+        search = GoogleSearch(params)
+        # The client takes its request timeout as an attribute, not as a
+        # params key — a "timeout" inside params_dict would be forwarded to
+        # SerpApi as a query parameter and the request would still hang on
+        # the library default (60000, passed straight to requests as
+        # seconds, i.e. effectively forever). Set defensively: the attribute
+        # is what the pinned 2.4.2 client reads, and a client that lacks it
+        # simply keeps its own default.
+        try:
+            search.timeout = MERCHANT_TIMEOUT
+        except Exception:
+            pass
+        data = search.get_dict()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        return None, ""
+
+    if not isinstance(data, dict) or data.get("error"):
+        return None, ""
+
+    # Do not trust the shape of the payload. SerpApi has been seen returning
+    # unexpected types in these fields, and `product_results` arriving as a
+    # list (rather than an object) used to raise AttributeError here, which
+    # surfaced to the shopper as a 500 error page instead of the Google
+    # fallback. Every branch below must end in a fallback, never an exception.
+    product_results = data.get("product_results")
+    if not isinstance(product_results, dict):
+        return None, ""
+
+    stores = product_results.get("stores")
+    if not isinstance(stores, (list, tuple)):
+        return None, ""
+    link, store_name = _pick_store(stores, entry.get("store"))
+    if not link:
+        return None, ""
+
+    entry["resolved"] = link
+    entry["resolved_store"] = store_name
+    entry["resolved_ts"] = now
+    return link, store_name
 
 
 # ===============================
@@ -606,8 +847,16 @@ def get_product_prices(query, scope=""):
     now = time.time()
 
     if cache_key in cache:
-        data, ts = cache[cache_key]
+        entry = cache[cache_key]
+        data, ts = entry[0], entry[1]
         if now - ts < CACHE_TTL:
+            # Re-register the merchant routes for this feed. The route table
+            # and the price cache are pruned independently and a /go recovery
+            # deliberately re-runs this function to rebuild routes — if a
+            # cache hit returned early without re-seeding them, that recovery
+            # would find nothing and the shopper would bounce to Google.
+            for seed in (entry[2] if len(entry) > 2 else []):
+                remember_merchant_route(query=query, scope=scope, **seed)
             return data
 
     params = {
@@ -616,18 +865,25 @@ def get_product_prices(query, scope=""):
         "location": "India",
         "hl":       "en",
         "gl":       "in",
-        # Resolve the merchant's own URL instead of the google.com/search
-        # redirect. Without this every listing arrives as a Google link, so
-        # there is no merchant to trust-score.
-        "direct_link": "true",
+        # NOTE: there is no parameter on this engine that returns the
+        # merchant's own URL. `direct_link=true` used to sit here and was
+        # silently ignored — google_shopping rows carry no link/direct_link/
+        # merchant_link field at all, only `product_link`, which points at
+        # google.com/search?ibp=oshop. That is why every Buy button landed on
+        # Google Shopping. The merchant URL lives behind a second call, on the
+        # google_immersive_product engine, keyed by the per-row
+        # immersive_product_page_token captured below and resolved lazily by
+        # /go/<product_id> when a shopper actually clicks.
         # More rows for the same one API call.
-        "num":      "60",
+        "num":      str(SERPAPI_NUM),
         "api_key":  os.getenv("SERPAPI_KEY")
     }
 
     try:
         results = GoogleSearch(params).get_dict()
         products = []
+        # Everything needed to rebuild the merchant routes from a cache hit.
+        seeds = []
 
         for item in results.get("shopping_results", []):
             title = item.get("title", "")
@@ -649,15 +905,33 @@ def get_product_prices(query, scope=""):
             if link == "#":
                 continue
 
+            store = item.get("source", "")
+
+            # Remember how to reach the real merchant for this row. Returns
+            # "" when the row has no usable token or id, in which case the
+            # listing keeps its Google link and behaves exactly as before.
+            seed = {
+                "product_id": item.get("product_id"),
+                "token": item.get("immersive_product_page_token"),
+                "store": store,
+                "fallback": link,
+            }
+            go_link = remember_merchant_route(query=query, scope=scope, **seed)
+            if go_link:
+                seeds.append(seed)
+
             products.append({
                 "title": title,
                 "price": item.get("price", ""),
-                "store": item.get("source", ""),
+                "store": store,
                 "image": item.get("thumbnail", ""),
-                "link":  link
+                "link":  link,
+                # Where the Buy button should point. Falls back to the Google
+                # link when this row cannot be resolved.
+                "go_link": go_link or link,
             })
 
-        cache[cache_key] = (products, now)
+        cache[cache_key] = (products, now, seeds)
         _prune_cache()
         return products
 
@@ -940,6 +1214,154 @@ def category_page(category_name):
 # ===============================
 # API ROUTE
 # ===============================
+# ===============================
+# MERCHANT REDIRECT
+# ===============================
+@app.route("/go/<product_id>")
+def go_to_merchant(product_id):
+    """Send the shopper to the merchant's own product page.
+
+    The listing's merchant URL is resolved here, on click, rather than for
+    every card at search time — see the MERCHANT LINK RESOLUTION section for
+    why. Three things must hold before we redirect anywhere:
+
+      1. the id is one we handed out (this is not an open redirect — the
+         destination comes from our own table, never from the request),
+      2. the resolved address is plain http(s), via safe_link,
+      3. the merchant clears the trust threshold, checked here because this
+         is the first moment the real domain is known.
+
+    Anything that fails falls back to the Google Shopping link the card would
+    have used before this change, so a resolve failure degrades to the old
+    behaviour instead of a dead end.
+    """
+    product_id = (product_id or "").strip()
+    if not PRODUCT_ID_RE.match(product_id):
+        return redirect("/", code=302)
+
+    entry = merchant_routes.get(product_id)
+
+    if not entry:
+        # This worker never served the search that produced the link — see
+        # merchant_route_path. Re-run the feed for the query carried on the
+        # URL, which is usually a cache hit, and try the table again.
+        recover_q = request.args.get("q", "").strip()
+        if is_valid_query(recover_q):
+            try:
+                get_product_prices(recover_q,
+                                   scope=request.args.get("s", "").strip()[:40])
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+            entry = merchant_routes.get(product_id)
+
+    if not entry:
+        # Nothing left to resolve with. Send the shopper to the Google
+        # Shopping page for this exact product — the behaviour before this
+        # change — rather than dumping them on the homepage.
+        return redirect(
+            "https://www.google.com/shopping/product/" + product_id, code=302)
+
+    fallback = trustscan.safe_link(entry.get("fallback", ""))
+    fallback = fallback if fallback != "#" else "/"
+
+    # Belt and braces around the whole resolve. Everything inside is written
+    # to return rather than raise, but this is a redirect a shopper is
+    # waiting on: an unforeseen shape in the upstream payload must cost them
+    # the merchant page, not show them a 500.
+    try:
+        link, store_name = resolve_merchant_link(product_id)
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        link, store_name = None, ""
+
+    if not link:
+        return redirect(fallback, code=302)
+
+    link = trustscan.safe_link(link)
+    if link == "#":
+        return redirect(fallback, code=302)
+
+    # The card was filtered on the Google domain, which tells us nothing about
+    # the seller. Now that the real domain is known, apply the same threshold
+    # the feed applies — a listing that would have been hidden must not become
+    # reachable just because the trust check happened too early.
+    if trustscan.ENABLED:
+        try:
+            verdict = trustscan.score_url(
+                link, store=store_name or entry.get("store", ""), deep=DEEP_TRUST)
+            if verdict and not trustscan.is_trusted(verdict):
+                return render_untrusted_merchant_page(
+                    link, store_name or entry.get("store", ""), verdict)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+
+    return redirect(link, code=302)
+
+
+def render_untrusted_merchant_page(link, store, verdict):
+    """Warn before handing a shopper to a merchant that failed TrustScan.
+
+    Deliberately an interstitial rather than a hard block: the shopper asked
+    for this specific listing, and the score is a heuristic. They get the
+    reason and an explicit way through.
+    """
+    from markupsafe import escape
+
+    domain = escape((verdict or {}).get("domain", "") or "")
+    score = (verdict or {}).get("score")
+    score_txt = "%s/100" % score if isinstance(score, (int, float)) else "unrated"
+    reason = escape(((verdict or {}).get("flags")
+                     or [(verdict or {}).get("verdict", "Below the trust threshold")])[0])
+    store_txt = escape(store or domain or "this store")
+    href = escape(link)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Check this store — ProductFilter</title>
+  <style>
+    *{{margin:0;padding:0;box-sizing:border-box}}
+    body{{background:#0b0f0c;color:#e8e6df;min-height:100vh;display:flex;
+      align-items:center;justify-content:center;padding:24px;
+      font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.55}}
+    .card{{text-align:center;max-width:460px}}
+    .icon{{font-size:3.5rem;margin-bottom:20px}}
+    h1{{font-size:1.75rem;font-weight:800;letter-spacing:-.02em;margin-bottom:10px}}
+    p{{color:#9aa39b;margin-bottom:18px}}
+    .box{{background:#141a15;border:1px solid #26302a;border-radius:16px;
+      padding:18px 22px;margin-bottom:22px;text-align:left}}
+    .box b{{display:block;color:#e2604a;font-size:1.1rem;margin-bottom:6px}}
+    .box span{{font-size:.85rem;color:#9aa39b}}
+    .row{{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}}
+    a.btn{{display:inline-block;padding:12px 20px;border-radius:12px;
+      text-decoration:none;font-weight:700;font-size:.95rem}}
+    a.back{{background:#1d4a2a;color:#e8f5e9}}
+    a.on{{background:transparent;color:#9aa39b;border:1px solid #26302a}}
+    .foot{{color:#5d655e;font-size:.75rem;margin-top:20px}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">⚠️</div>
+    <h1>Check this store first</h1>
+    <p>TrustScan rated <b>{store_txt}</b> below the threshold ProductFilter uses to show sellers.</p>
+    <div class="box">
+      <b>{domain or store_txt} — {score_txt}</b>
+      <span>{reason}</span>
+    </div>
+    <div class="row">
+      <a class="btn back" href="/">Take me back</a>
+      <a class="btn on" href="{href}" rel="noopener noreferrer nofollow">Continue anyway</a>
+    </div>
+    <p class="foot">Scores are automated and can be wrong. Nothing is bought or shared on your behalf.</p>
+  </div>
+</body>
+</html>"""
+    return html, 200
+
+
 @app.route("/api/price-check")
 def price_check():
     title = request.args.get("title", "").strip()
