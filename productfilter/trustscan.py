@@ -930,23 +930,24 @@ def _normalize_items(items):
 def score_many(items, deep=False):
     norm = _normalize_items(items)
     score_urls(items, deep=deep)
+
     results = []
     for url, store in norm:
         k = _cache_key(url, store, deep)
         with _lock:
             hit = _result_cache.get(k)
+
         res = dict(hit["res"]) if hit else dict(NO_LINK_RESULT)
         res["url"], res["store"] = url, store
         results.append(res)
+
     return results
 
 
 def score_urls(items, deep=False, use_ai=False):
-    """Score a batch of listings.
+    """Score a batch of listings."""
 
-    
     norm = _normalize_items(items)
-
     out = {}
     todo = []
     now = time.time()
@@ -956,6 +957,7 @@ def score_urls(items, deep=False, use_ai=False):
         k = _cache_key(url, store, deep)
         with _lock:
             hit = _result_cache.get(k)
+
         if hit and now - hit["ts"] < _RESULT_TTL:
             out[url] = dict(hit["res"])
         else:
@@ -963,7 +965,6 @@ def score_urls(items, deep=False, use_ai=False):
 
     if not todo:
         return out
-
     # 2. one shared feed pull for the whole batch
     phish = open_phish()
     parsed_map = {}
