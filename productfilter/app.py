@@ -6,6 +6,7 @@ import ipaddress
 import time
 import logging
 from collections import defaultdict
+from urllib.parse import urlsplit, urlunsplit, quote
 
 
 TRUSTED_STORES = [
@@ -250,10 +251,29 @@ def extract_price(p):
 
     num = re.sub(r"[,\u00a0\s]", "", m.group(1))
     try:
-        val = float(num)
+           val = float(num)
     except ValueError:
-        return float("inf")
-    return val if val > 0 else float("inf")
+         return float("inf")
+         return val if val > 0 else float("inf")
+
+def normalize_feed_link(url):
+    """Percent-encode a feed URL that arrives with raw, illegal characters."""
+    if not isinstance(url, str):
+        return ""
+    url = url.strip()
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        quote(parts.path, safe="/%:@!$&'()*+,;=~-._"),
+        quote(parts.query, safe="/%:@!$&'()*+,;=~-._?"),
+        quote(parts.fragment, safe="/%:@!$&'()*+,;=~-._?"),
+    ))
 
 MIN_QUERY_LEN = 3
 MAX_QUERY_LEN = 100
@@ -599,7 +619,7 @@ def get_product_prices(query, scope=""):
 
         for item in results.get("shopping_results", []):
             title = item.get("title", "")
-            link  = (
+            link  = normalize_feed_link(
                 item.get("direct_link")
                 or item.get("merchant_link")
                 or item.get("link")

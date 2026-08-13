@@ -97,11 +97,27 @@ class Category:
         self.require = tuple(require)
 
     def build_query(self, term=""):
-      term = (term or "").strip()
-      if not term:
-        return self.base_query
-      return term
+        term = (term or "").strip()
 
+        if not term:
+            return self.base_query
+
+        if "{term}" not in self.query_template:
+            return term
+
+        built = self.query_template.format(term=term).strip()
+
+        seen = set()
+        words = []
+
+        for word in built.split():
+            key = word.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            words.append(word)
+
+        return " ".join(words)
 
 CATEGORIES = {
     # -----------------------------------------------------------------

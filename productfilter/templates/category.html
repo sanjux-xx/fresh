@@ -372,11 +372,14 @@ footer{background:var(--ink);color:#CFD3C6;padding:20px 0}
         {% if off_category %}
           {{ off_category }} listing{{ '' if off_category == 1 else 's' }} came back, but none were {{ cat.name|lower }} — accessories, lookalikes and other categories are filtered out of this page.
         {% else %}
-          Try a broader term, or check the spelling.
-        {% endif %}
-      {% else %}
-        <b>Search to compare prices.</b><br>Type a product above and we'll check every store live.
-      {% endif %}
+        Try a broader term, or check the spelling.
+       {% endif %}
+      {% elif upstream_count %}
+       <b>No {{ cat.name|lower }} to show right now.</b><br>
+      {{ upstream_count }} listing{{ '' if upstream_count == 1 else 's' }} came back, but none passed the {{ cat.name|lower }} checks. Try a search above.
+       {% else %}
+  <b>Search to compare prices.</b><br>Type a product above and we'll check every store live.
+{% endif %}
       {% if hidden %}<br><br><b>{{ hidden|length }} low-trust listing{{ '' if hidden|length == 1 else 's' }} hidden</b> — every store found scored {{ min_score|default(50) }} or below on TrustScan, so none were safe to show.{% endif %}
     </div>
     {% endif %}
