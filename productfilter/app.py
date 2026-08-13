@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, redirect
 from serpapi import GoogleSearch
 import re
 import os
@@ -107,6 +107,16 @@ app.register_blueprint(food_bp)
 # Defence in depth for templates: |safe_url renders only plain http(s)
 # addresses and collapses anything else (javascript:, data:, file:) to "#".
 app.jinja_env.filters["safe_url"] = trustscan.safe_link
+def buy_url(url):
+    """Allow internal /go routes while keeping safe_url protection."""
+    if isinstance(url, str) and re.match(
+        r"^/go/[0-9]{1,32}(\?[A-Za-z0-9%._~=&+-]{0,300})?$",
+        url.strip(),
+    ):
+        return url.strip()
+    return trustscan.safe_link(url)
+
+app.jinja_env.filters["buy_url"] = buy_url
 
 # ===============================
 # SECURITY / RATE LIMIT
@@ -442,16 +452,18 @@ def step3_compare_products(products):
                 "variant": p.get("variant", "Base"),
                 "best_price": price,
                 "best_store": p.get("store", ""),
-                "best_link": p.get("link", ""),
+               "best_link": p.get("link", ""),
+               "best_go": p.get("go_link") or p.get("link", ""),
                 "image": p.get("image", ""),
                 "offers": []
             }
 
         grouped[key]["offers"].append({
-            "store": p.get("store", ""),
-            "price": price,
-            "link": p.get("link", ""),
-        })
+        "store": p.get("store", ""),
+       "price": price,
+       "link": p.get("link", ""),
+       "go_link": p.get("go_link") or p.get("link", ""),
+         })
 
     for product in grouped.values():
         preferred = []
@@ -474,7 +486,7 @@ def step3_compare_products(products):
             product["best_price"] = best["price"]
             product["best_store"] = best["store"]
             product["best_link"] = best["link"]
-            
+            product["best_go"] = best["go_link"] or best["link"]
 
     return list(grouped.values())
 
