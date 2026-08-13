@@ -251,10 +251,10 @@ def extract_price(p):
 
     num = re.sub(r"[,\u00a0\s]", "", m.group(1))
     try:
-           val = float(num)
+        val = float(num)
     except ValueError:
          return float("inf")
-         return val if val > 0 else float("inf")
+    return val if val > 0 else float("inf")
 
 def normalize_feed_link(url):
     """Percent-encode a feed URL that arrives with raw, illegal characters."""
