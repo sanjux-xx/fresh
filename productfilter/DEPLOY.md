@@ -78,11 +78,30 @@ None of them need an API key or network access.
 
 ## 3. Deploy
 
-Unchanged from before — the GitHub Actions workflow still targets the Azure Web
-App named `productcomparison`. That is the resource name, not the domain; leave
-it alone unless you are moving the app itself.
+The app runs on **Northflank**, which builds from this repository — pushing to
+`main` is the deploy. There is no separate deploy workflow in this repo.
 
-    Procfile:  web: gunicorn app:app --bind 0.0.0.0:8000
+    Procfile:  web: gunicorn app:app --bind 0.0.0.0:8000 -c gunicorn.conf.py
+
+### Binary assets are generated, not hand-authored
+
+`static/fonts/*.woff2` and `static/icons/*` are build outputs. Regenerate and
+commit them whenever `build_fonts.py`, `generate_icons.py` or
+`static/images/logo.png` changes:
+
+    pip install fonttools brotli pillow
+    python3 build_fonts.py        # -> static/fonts/*.woff2      (~56 KB total)
+    python3 generate_icons.py     # -> static/icons/*.{webp,png}
+    git add static/fonts static/icons && git commit -m "assets: rebuild" && git push
+
+Both scripts are deterministic, so re-running them is always safe.
+`deploycheck.py` fails if the font files are absent, which is the intended
+guard — the templates preload them and the page falls back to system fonts
+without them.
+
+If you would rather CI did this, `docs/build-assets.yml.example` is a ready
+GitHub Actions workflow that runs both scripts and commits the result; move it
+to `.github/workflows/build-assets.yml` to enable it.
 
 ---
 
@@ -123,18 +142,26 @@ what they structurally could not reach:
 ## 6. Verify the performance fixes on production
 
 The speed test that prompted these changes measured from a single vantage point
-through an egress proxy, so two of its findings need confirming against your own
-edge before you act on them further.
+through an egress proxy, so its figures are worth confirming against your own
+edge.
 
-**HTTP/2 (report fix 05, not changed in code).** The report saw HTTP/1.1 only,
-but flagged that the downgrade may have been the measurement proxy rather than
-your edge. Check it directly:
+**HTTP/2 (report fix 05) — a Northflank port setting, not a code change.**
+The report hedged that the HTTP/1.1 it saw might have been its own proxy. It
+almost certainly was not: Northflank's own documentation states that existing
+HTTP ports stay on HTTP/1 and must be switched by the user, and that the
+`istio-envoy` server header the report recorded is their edge. Confirm, then
+fix in the dashboard:
 
     curl -sI --http2 https://productfilter.dev/ -o /dev/null -w '%{http_version}\n'
 
-If that prints `1.1`, enable h2 at the istio/envoy layer that fronts the app —
-it is a gateway setting, not something this repo controls. If it prints `2`, the
-finding was an artefact of the test environment and nothing needs doing.
+If that prints `1.1`: open the service in Northflank → **Ports & DNS** → edit
+the public port → set protocol to **HTTP/2** → save. No restart is required,
+and Northflank downgrades automatically for clients that cannot speak h2, so
+there is nothing to roll back if it misbehaves. This compounds with the font
+and caching work above, because the remaining requests can then multiplex over
+one connection.
+
+    https://northflank.com/docs/v1/application/network/configure-ports
 
 **Cold-path TTFB (report fix 01, fixed in code).** Re-measure the route the
 report found worst, first request after a deploy and again a minute later:
