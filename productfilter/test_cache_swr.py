@@ -159,8 +159,16 @@ def test_beyond_stale_ttl_is_not_served():
 
 def test_timeout_is_bounded():
     print("7. the real upstream call is timeout-bounded")
-    check("SERPAPI_TIMEOUT is a few seconds, not the 60000s default",
-          0 < app.SERPAPI_TIMEOUT <= 15, "(got %r)" % app.SERPAPI_TIMEOUT)
+    # Two-sided bound, and both sides have bitten in practice. The upper bound
+    # guards against the client's own 60000 s default (no timeout at all) and
+    # must stay under gunicorn's 45 s worker kill. The LOWER bound exists
+    # because a 6 s value once cut off SerpApi's normal 3.6-11.5 s cold
+    # responses mid-flight, making every uncached search render empty — the
+    # timeout is a hang-guard and must clear real upstream latency.
+    check("SERPAPI_TIMEOUT clears real upstream latency (>= 15s)",
+          app.SERPAPI_TIMEOUT >= 15, "(got %r)" % app.SERPAPI_TIMEOUT)
+    check("SERPAPI_TIMEOUT stays under gunicorn's 45s worker timeout",
+          app.SERPAPI_TIMEOUT < 45, "(got %r)" % app.SERPAPI_TIMEOUT)
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "app.py")).read()
     check("timeout is applied to the client",

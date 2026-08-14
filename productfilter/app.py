@@ -227,11 +227,21 @@ CACHE_TTL = 20 * 60
 #                   indefinitely. google-search-results defaults its timeout
 #                   to 60000 *seconds*, i.e. no timeout at all; this caps the
 #                   worst case a shopper can experience.
+#
+#                   IMPORTANT: this is a hang-guard, not a latency target, and
+#                   it MUST sit above SerpApi's normal cold response time. The
+#                   speed test measured genuine upstream latency of 3.6-11.5 s
+#                   on fresh queries — an earlier value of 6 s cut off healthy
+#                   responses mid-flight, which made every uncached search
+#                   render an empty page. 30 s clears real upstream latency
+#                   with margin while staying under gunicorn's 45 s worker
+#                   timeout, so a true hang still dies here, with a fallback,
+#                   instead of as a 502.
 #   PREWARM         A background thread keeps every category slug warm, so in
 #                   normal operation the synchronous path is never taken for
 #                   a category landing page at all.
 STALE_TTL = int(os.getenv("STALE_TTL", str(24 * 60 * 60)))
-SERPAPI_TIMEOUT = float(os.getenv("SERPAPI_TIMEOUT", "6"))
+SERPAPI_TIMEOUT = float(os.getenv("SERPAPI_TIMEOUT", "30"))
 
 # Ceiling on concurrent background refreshes. Every refresh is a billable
 # SerpApi call, and each gunicorn worker holds its own in-process cache, so

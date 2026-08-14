@@ -35,7 +35,9 @@ Set these in your hosting provider's config panel. Full annotated list is in
     PREWARM=1               keep category feeds warm in the background
     PREWARM_INTERVAL=900    seconds between pre-warm cycles
     STALE_TTL=86400         how long an expired feed may still be served
-    SERPAPI_TIMEOUT=6       hard ceiling on one upstream call, in seconds
+    SERPAPI_TIMEOUT=30      hang-guard on one upstream call, seconds — must stay
+                            above SerpApi's real cold latency (3.6-11.5 s) and
+                            below gunicorn's 45 s worker timeout
     MAX_REFRESH_THREADS=2   concurrent background refreshes per worker
     STATIC_MAX_AGE=31536000 lifetime of a content-hashed /static URL
     HTML_SMAX_AGE=120       how long a shared cache may hold an HTML page
