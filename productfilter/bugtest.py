@@ -9,6 +9,7 @@ the awkward edge cases that show up in production logs at 3am.
 """
 
 import os
+import re
 import sys
 import types
 import threading
@@ -152,12 +153,22 @@ QUERIES = [
     ("a\nb\rc\td", "raw control characters"),
     ("-" * 200, "punctuation run"),
 ]
+def _without_asset_hashes(body):
+    """Drop ?v=<hash> query strings before scanning a page for a literal.
+
+    Static asset URLs carry a content hash (see static_url in app.py), and a
+    hex hash can contain any digit pair — one of them happened to contain "49",
+    which made the SSTI probe below report an evaluation that never happened.
+    """
+    return re.sub(r"\?v=[0-9a-f]+", "", body)
+
+
 for q, label in QUERIES:
     try:
         r = render([], query=q)
         ok = r.status_code == 200
         body = r.get_data(as_text=True)
-        if "{{7*7}}" == q and "49" in body:
+        if "{{7*7}}" == q and "49" in _without_asset_hashes(body):
             ok, label = False, label + " (SSTI: evaluated!)"
         detail = "" if ok else "HTTP %s" % r.status_code
     except Exception as e:

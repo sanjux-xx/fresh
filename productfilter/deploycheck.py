@@ -112,6 +112,7 @@ STDLIB = set(getattr(sys, "stdlib_module_names", ())) or {
     # exists to support.
     "ipaddress", "ssl", "secrets", "uuid", "textwrap", "difflib", "struct",
     "decimal", "statistics", "operator", "contextlib", "dataclasses", "gzip",
+    "mimetypes",
 }
 LOCAL = {os.path.splitext(f)[0] for f in PY_FILES}
 DIST = {"flask": "flask", "requests": "requests", "serpapi": "google-search-results",
@@ -199,13 +200,34 @@ print("=" * 76)
 
 TEMPLATES = [f for f in os.listdir(os.path.join(HERE, "templates")) if f.endswith(".html")]
 missing_assets = []
+checked_refs = 0
 for t in TEMPLATES:
     body = read(os.path.join("templates", t))
-    for ref in re.findall(r'(?:src|href)="(/static/[^"?#]+)"', body):
-        if not os.path.exists(os.path.join(HERE, ref.lstrip("/"))):
+    # Assets are referenced two ways: a literal path, or the content-hashing
+    # helper static_url('js/productfilter.js') added for speed-test fix 02.
+    # Both have to point at a file that exists.
+    refs = [r.lstrip("/") for r in re.findall(r'(?:src|href)="(/static/[^"?#]+)"', body)]
+    refs += ["static/" + r for r in
+             re.findall(r"static_url\(\s*['\"]([^'\"]+)['\"]\s*\)", body)]
+    for ref in refs:
+        checked_refs += 1
+        if not os.path.exists(os.path.join(HERE, ref)):
             missing_assets.append("%s -> %s" % (t, ref))
 check("every /static reference resolves to a real file", not missing_assets,
-      missing_assets[0] if missing_assets else "%d templates" % len(TEMPLATES))
+      missing_assets[0] if missing_assets
+      else "%d refs across %d templates" % (checked_refs, len(TEMPLATES)))
+
+# Fix 02 only pays off if pages actually request the hashed URLs, and fix 03
+# only pays off if the Google Fonts round-trip is really gone.
+PAGE_TEMPLATES = ("index.html", "category.html", "food.html")
+check("page templates reference assets through static_url",
+      all("static_url(" in read(os.path.join("templates", t)) for t in PAGE_TEMPLATES))
+check("no render-blocking third-party font request remains",
+      not any("fonts.googleapis.com" in read(os.path.join("templates", t))
+              for t in PAGE_TEMPLATES))
+check("self-hosted font files are present",
+      all(os.path.exists(os.path.join(HERE, "static/fonts", f)) for f in
+          ("bricolage-grotesque.woff2", "spline-sans-mono.woff2")))
 
 for f in ("static/notifications.js", "static/js/productfilter.js", "static/sw.js",
           "static/manifest.json", "static/icons/icon-192.png"):
@@ -273,8 +295,12 @@ mani = json.loads(read("static/manifest.json"))
 check("manifest carries the new brand", mani["short_name"] == BRAND, mani["short_name"])
 check("manifest theme colour matches the live design",
       mani["theme_color"] == "#0E7A4D", mani["theme_color"])
-check("service worker cache name was bumped for the rebrand",
-      "productfilter-v" in read("static/sw.js"))
+# The cache name is no longer a hand-edited literal: the /sw.js route derives
+# it from the content hashes of the precached assets (speed-test fix 02), so
+# what matters is that the brand prefix and the injection point are both intact.
+sw_src = read("static/sw.js")
+check("service worker cache name is injected, not hand-maintained",
+      "__CACHE_NAME__" in sw_src and "productfilter-" in read("app.py"))
 check("README points at the new domain", DOMAIN in read("README.md"))
 
 for t_ in PAGE_TEMPLATES:
@@ -369,7 +395,7 @@ check("saved alert links are validated before use", "safeLink" in notif_code)
 check("alert list is built with DOM APIs", "createElement" in notif_code)
 
 check("modal partial loads both scripts",
-      "/static/notifications.js" in modal and "/static/js/productfilter.js" in modal)
+      "notifications.js" in modal and "js/productfilter.js" in modal)
 
 # a button nested inside an anchor is invalid HTML and swallows its own clicks
 cat = read(os.path.join("templates", "category.html"))
@@ -406,7 +432,7 @@ for t_ in PAGE_TEMPLATES:
     # must carry the banner and the script that reveals it.
     check("%s includes the install control" % t_, '_install.html' in body)
     check("%s loads the app script that drives it" % t_,
-          "/static/js/productfilter.js" in body or '_alert_modal.html' in body)
+          "js/productfilter.js" in body or '_alert_modal.html' in body)
 
     if ".search{" in body:
         rule = re.search(r"\.search\{([^}]*)\}", body).group(1)
