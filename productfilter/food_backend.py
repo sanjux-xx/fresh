@@ -403,6 +403,11 @@ def brand_summary():
     return out
 
 
+# Both spellings are served directly. With only the "/" rule, a request for
+# /food answered 308 -> /food/, which the 2026-08-13 speed test recorded as a
+# wasted round trip (87 ms) on every entry to this section — links, shares and
+# search results all point at /food without the slash.
+@food_bp.route("", strict_slashes=False)
 @food_bp.route("/")
 def food_home():
     return render_template("food.html", brands=brand_summary())

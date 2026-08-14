@@ -2,7 +2,20 @@
    naturally arrives, rather than covering the page from a fixed bar. Hidden
    until the browser says the app is installable. #}
 <section id="install-card" class="hidden">
-  <img src="/static/icons/icon-192.png" alt="" width="60" height="60">
+  {# Speed-test fix 04: this rendered a 192px, 89,984 B PNG into a 60x60 box —
+     25.4% of first-load weight for a decorative thumbnail. Now it asks for an
+     icon sized to how it actually displays (60 CSS px, 2x for retina) and
+     prefers WebP, with the PNG kept as a fallback for older browsers.
+     2,682 B at 1x / 6,686 B at 2x, versus 89,984 B before. #}
+  <picture>
+    <source type="image/webp"
+            srcset="{{ static_url('icons/icon-72.webp') }} 1x,
+                    {{ static_url('icons/icon-128.webp') }} 2x">
+    <img src="{{ static_url('icons/icon-72.png') }}"
+         srcset="{{ static_url('icons/icon-72.png') }} 1x,
+                 {{ static_url('icons/icon-128.png') }} 2x"
+         alt="" width="60" height="60" decoding="async" loading="lazy">
+  </picture>
   <div class="ic-body">
     <b>Keep ProductFilter one tap away</b>
     <p>Install it as an app: opens straight to search, works offline, and your

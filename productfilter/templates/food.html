@@ -11,10 +11,8 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="description" content="Compare prices across India's major retailers — every seller is trust-screened, so low-trust shops never reach your results.">
 <link rel="manifest" href="/manifest.json"/>
-<link rel="apple-touch-icon" href="/static/icons/icon-180.png"/>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Schibsted+Grotesk:wght@400;500;600&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="apple-touch-icon" href="{{ static_url('icons/icon-180.png') }}"/>
+{% include "_fonts.html" %}
 <style>
 :root{
   --paper:#FAF8F2; --paper-raised:#FFFFFF;
@@ -24,7 +22,7 @@
   --strike:#C64B33; --radius:14px;
   --accent:#8A4FBE; --accent-soft:#F1E8F9;
   --font-display:"Bricolage Grotesque",system-ui,sans-serif;
-  --font-body:"Schibsted Grotesk",system-ui,sans-serif;
+  --font-body:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   --font-mono:"Spline Sans Mono",ui-monospace,monospace;
 }
 *{margin:0;padding:0;box-sizing:border-box}
@@ -275,7 +273,7 @@ footer{background:var(--ink);color:#CFD3C6;margin-top:40px;padding:20px 0}
   </div>
 </footer>
 
-<script src="/static/js/productfilter.js" defer></script>
+<script src="{{ static_url('js/productfilter.js') }}" defer></script>
 
 </body>
 </html>

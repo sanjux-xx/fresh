@@ -3,25 +3,36 @@
 // Place this file in /static/sw.js
 // ============================================
 
-const CACHE_NAME = 'productfilter-v1';
+// CACHE_NAME, STATIC_ASSETS and the notification icons are injected by the
+// /sw.js route in app.py, so the precache list carries the same content-hashed
+// URLs the pages request (no second copy of every asset) and the cache name
+// changes whenever an asset does (so a deploy cannot leave a stale cache
+// pinned). The placeholders below are only ever seen if this file is served
+// straight off disk without going through that route.
+const CACHE_NAME = '__CACHE_NAME__';
 
-const STATIC_ASSETS = [
-  '/',
-  '/category/mobiles',
-  '/category/laptops',
-  '/category/groceries',
-  '/category/fruits',
-  '/category/medicine',
-  '/static/notifications.js',
-  '/static/images/icon-192.png',
-  '/static/images/icon-72.png',
-  '/static/images/cs-icon.png',
-];
+const STATIC_ASSETS = __STATIC_ASSETS__;
+
+const NOTIFY_ICON  = '__NOTIFY_ICON__';
+const NOTIFY_BADGE = '__NOTIFY_BADGE__';
 
 // ── Install: cache static assets ──
+// This used to call cache.addAll() over a list containing
+// /static/images/icon-192.png, /static/images/icon-72.png and
+// /static/images/cs-icon.png — none of which exist; the icons live in
+// /static/icons/. addAll() rejects atomically if any one request fails, so the
+// install failed every time and the service worker never activated: no
+// precache, no offline fallback, and no error anywhere a user would see.
+// Caching entries individually means a bad entry degrades only itself.
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS))
+    caches.open(CACHE_NAME).then(cache => Promise.all(
+      STATIC_ASSETS.map(url =>
+        cache.add(new Request(url, { cache: 'reload' })).catch(err => {
+          console.warn('[sw] precache skipped', url, err);
+        })
+      )
+    ))
   );
   self.skipWaiting();
 });
@@ -71,8 +82,8 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'ProductFilter Price Alert 🔔';
   const options = {
     body:    data.body || 'A product price has dropped!',
-    icon:    '/static/images/icon-192.png',
-    badge:   '/static/images/icon-72.png',
+    icon:    NOTIFY_ICON,
+    badge:   NOTIFY_BADGE,
     tag:     data.tag || 'price-alert',
     vibrate: [200, 100, 200],
     data:    { url: data.url || '/' },
@@ -121,8 +132,8 @@ async function checkPriceAlerts(alerts) {
       if (data.current_price && data.current_price <= alert.target_price) {
         await self.registration.showNotification('💰 Price Drop Alert — ProductFilter', {
           body:    `${alert.title} is now ₹${data.current_price} (your target: ₹${alert.target_price})`,
-          icon:    '/static/images/cs-icon.png',
-          badge:   '/static/images/cs-icon.png',
+          icon:    NOTIFY_ICON,
+          badge:   NOTIFY_BADGE,
           tag:     `alert-${alert.id}`,
           vibrate: [200, 100, 200],
           data:    { url: data.link || '/' },

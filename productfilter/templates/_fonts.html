@@ -1,0 +1,39 @@
+{# Self-hosted webfonts (speed-test fix 03).
+
+   Before: three families (Bricolage Grotesque, Schibsted Grotesk, Spline Sans
+   Mono) pulled from Google, resolving to seven woff2 files — 239.8 KB, 69.4%
+   of first-load weight — behind a render-blocking stylesheet request to
+   fonts.googleapis.com on a second origin.
+
+   After: two families, self-hosted, one variable woff2 each, subset to the
+   characters this app actually renders (Latin-1 + typographic punctuation +
+   ₹ + arrows) and with the weight axes clamped to the weights used. 57.6 KB
+   total. Body text now uses the platform UI font, which costs nothing and is
+   already resident.
+
+   The @font-face rules are inlined rather than linked so there is no
+   stylesheet round-trip at all, and both files are preloaded so the fetch
+   starts with the HTML instead of after the CSS parses. Self-hosting also
+   lets the CSP drop fonts.googleapis.com and fonts.gstatic.com entirely.
+
+   Regenerate the woff2 files with:  python3 build_fonts.py
+#}
+<link rel="preload" href="{{ static_url('fonts/bricolage-grotesque.woff2') }}" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="{{ static_url('fonts/spline-sans-mono.woff2') }}" as="font" type="font/woff2" crossorigin>
+<style>
+/* Variable fonts: one file covers every weight in the declared range. */
+@font-face{
+  font-family:"Bricolage Grotesque";
+  src:url("{{ static_url('fonts/bricolage-grotesque.woff2') }}") format("woff2");
+  font-weight:500 800;
+  font-style:normal;
+  font-display:swap;
+}
+@font-face{
+  font-family:"Spline Sans Mono";
+  src:url("{{ static_url('fonts/spline-sans-mono.woff2') }}") format("woff2");
+  font-weight:400 600;
+  font-style:normal;
+  font-display:swap;
+}
+</style>

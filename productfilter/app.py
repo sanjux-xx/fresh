@@ -1,5 +1,8 @@
-from flask import Flask, render_template, request, redirect
+from flask import Flask, render_template, request, redirect, url_for
 from serpapi import GoogleSearch
+import hashlib
+import json
+import mimetypes
 import re
 import os
 import ipaddress
@@ -128,12 +131,118 @@ def buy_url(url):
 app.jinja_env.filters["buy_url"] = buy_url
 
 # ===============================
+# STATIC ASSET VERSIONING (speed-test fix 02)
+# ===============================
+# The speed test found `cache-control: no-cache` on every static asset, with a
+# last-modified of 1980-01-01 — a placeholder, not a policy — so a repeat
+# visitor re-downloaded the JavaScript, icons and manifest on every navigation.
+#
+# The fix is the standard pair: a content hash in the URL, and a one-year
+# immutable lifetime for any URL that carries one. Change a file and its hash
+# changes, so the new URL is a cache miss by construction and there is nothing
+# to invalidate. Templates must therefore reference assets through
+# {{ static_url('js/productfilter.js') }} rather than a bare /static/... path;
+# an unversioned /static/ URL still works, it just gets a modest one-hour TTL.
+
+# Python's mimetypes table predates woff2 on some platforms, and a font served
+# as application/octet-stream is a font some proxies decline to compress or
+# cache sensibly. Register it explicitly.
+mimetypes.add_type("font/woff2", ".woff2")
+
+STATIC_MAX_AGE = int(os.getenv("STATIC_MAX_AGE", str(365 * 24 * 60 * 60)))
+STATIC_UNVERSIONED_MAX_AGE = int(os.getenv("STATIC_UNVERSIONED_MAX_AGE", "3600"))
+
+# HTML is not immutable, but it is identical for every visitor (no login, no
+# per-user content), so it is safe to let a shared cache hold it briefly and
+# keep serving it while it revalidates.
+HTML_SMAX_AGE = int(os.getenv("HTML_SMAX_AGE", "120"))
+HTML_STALE_WHILE_REVALIDATE = int(os.getenv("HTML_STALE_WHILE_REVALIDATE", "600"))
+
+_static_hashes = {}
+_static_hash_lock = threading.Lock()
+
+
+def static_version(filename):
+    """Short content hash of a file under static/, or "" if unreadable.
+
+    Memoised per process: hashing happens once per file per boot, never per
+    request. Deploys restart the process, which is exactly when a file's
+    content can have changed.
+    """
+    with _static_hash_lock:
+        if filename in _static_hashes:
+            return _static_hashes[filename]
+
+    digest = ""
+    try:
+        path = os.path.join(app.static_folder, filename)
+        hasher = hashlib.md5()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()[:10]
+    except OSError:
+        # Missing or unreadable file: fall back to an unversioned URL rather
+        # than raising inside a template render.
+        logging.warning("static_url: cannot hash %s", filename)
+
+    with _static_hash_lock:
+        _static_hashes[filename] = digest
+    return digest
+
+
+@app.template_global()
+def static_url(filename):
+    """/static/<filename>?v=<hash> — safe to cache immutably for a year."""
+    version = static_version(filename)
+    if version:
+        return url_for("static", filename=filename, v=version)
+    return url_for("static", filename=filename)
+
+
+# ===============================
 # SECURITY / RATE LIMIT
 # ===============================
 RATE_LIMIT = 50
 WINDOW_SIZE = 60
 BLOCK_TIME = 2 * 60
 CACHE_TTL = 20 * 60
+
+# ===============================
+# COLD-MISS BUDGET (speed-test fix 01)
+# ===============================
+# The 2026-08-13 speed test measured warm category hits at ~50 ms and cold
+# misses at 3.63 s (/category/medicine) to 11.54 s (/category/fruits) — a 231x
+# spread, all of it spent inside the synchronous SerpApi call below. Upstream
+# service time once cached is 9 ms, so none of that latency is ours to keep.
+#
+# Three defences, in order of how often they save a request:
+#
+#   STALE_TTL       An entry older than CACHE_TTL is stale, not gone. Up to
+#                   STALE_TTL it is served immediately and refreshed in the
+#                   background (stale-while-revalidate), so an expiring cache
+#                   never turns into an 11-second page for the visitor who
+#                   happens to arrive first.
+#   SERPAPI_TIMEOUT A genuinely uncached query still has to wait, but not
+#                   indefinitely. google-search-results defaults its timeout
+#                   to 60000 *seconds*, i.e. no timeout at all; this caps the
+#                   worst case a shopper can experience.
+#   PREWARM         A background thread keeps every category slug warm, so in
+#                   normal operation the synchronous path is never taken for
+#                   a category landing page at all.
+STALE_TTL = int(os.getenv("STALE_TTL", str(24 * 60 * 60)))
+SERPAPI_TIMEOUT = float(os.getenv("SERPAPI_TIMEOUT", "6"))
+
+# Ceiling on concurrent background refreshes. Every refresh is a billable
+# SerpApi call, and each gunicorn worker holds its own in-process cache, so
+# without a cap a burst of traffic on expiring keys could fan out into a lot
+# of paid calls at once.
+MAX_REFRESH_THREADS = int(os.getenv("MAX_REFRESH_THREADS", "2"))
+
+# Pre-warming is on by default but no-ops without a SERPAPI_KEY, so local and
+# CI runs stay free. Set PREWARM=0 to disable in production.
+PREWARM = os.getenv("PREWARM", "1") in ("1", "true", "True")
+PREWARM_INTERVAL = int(os.getenv("PREWARM_INTERVAL", str(15 * 60)))
 
 # Deep trust mode also pulls RDAP domain age + DNS per unique domain. Results
 # are cached 24h per domain, but the first lookup costs ~1s, so it is off by
@@ -879,26 +988,109 @@ def resolve_merchant_link(product_id):
 # ===============================
 # SERPAPI
 # ===============================
-def get_product_prices(query, scope=""):
+# Keys currently being refreshed in the background. A key is single-flighted:
+# ten simultaneous visitors to an expiring category trigger one paid refresh,
+# not ten, and all ten are served the stale copy without waiting for it.
+_refresh_inflight = set()
+_refresh_lock = threading.Lock()
+
+
+def _cache_key_for(query, scope=""):
     # The cache key carries the scope (category slug) as well as the query.
     # Two categories can legitimately build the same query string, and without
     # the scope the first one to run would serve its feed to the other.
-    cache_key = "%s|%s" % ((scope or "").lower().strip(), query.lower().strip())
+    return "%s|%s" % ((scope or "").lower().strip(), query.lower().strip())
+
+
+def _reseed_routes(entry, query, scope):
+    """Re-register the merchant routes carried by a cache entry.
+
+    The route table and the price cache are pruned independently and a /go
+    recovery deliberately re-runs the lookup to rebuild routes — if a cache
+    hit returned early without re-seeding them, that recovery would find
+    nothing and the shopper would bounce to Google.
+    """
+    for seed in (entry[2] if len(entry) > 2 else []):
+        remember_merchant_route(query=query, scope=scope, **seed)
+
+
+def _claim_refresh(cache_key):
+    """True when this caller owns the background refresh for cache_key."""
+    with _refresh_lock:
+        if cache_key in _refresh_inflight:
+            return False
+        if len(_refresh_inflight) >= MAX_REFRESH_THREADS:
+            return False
+        _refresh_inflight.add(cache_key)
+        return True
+
+
+def _release_refresh(cache_key):
+    with _refresh_lock:
+        _refresh_inflight.discard(cache_key)
+
+
+def _refresh_in_background(query, scope, cache_key):
+    """Refresh a stale entry without making anyone wait for it.
+
+    Declining to start (already in flight, or at the concurrency ceiling) is
+    not a failure: the stale copy is still served, and the next request after
+    this one finishes will see fresh data.
+    """
+    if not _claim_refresh(cache_key):
+        return
+
+    def run():
+        try:
+            _fetch_product_prices(query, scope, cache_key)
+        except Exception as exc:            # pragma: no cover - defensive
+            sentry_sdk.capture_exception(exc)
+        finally:
+            _release_refresh(cache_key)
+
+    threading.Thread(target=run, name="swr-refresh", daemon=True).start()
+
+
+def get_product_prices(query, scope=""):
+    """Feed for a query, with stale-while-revalidate.
+
+    Fresh  (age < CACHE_TTL)  -> served as-is.
+    Stale  (age < STALE_TTL)  -> served immediately, refreshed in background.
+    Absent                    -> one synchronous, timeout-bounded fetch.
+    """
+    cache_key = _cache_key_for(query, scope)
     now = time.time()
 
-    if cache_key in cache:
-        entry = cache[cache_key]
+    entry = cache.get(cache_key)
+    if entry:
         data, ts = entry[0], entry[1]
-        if now - ts < CACHE_TTL:
-            # Re-register the merchant routes for this feed. The route table
-            # and the price cache are pruned independently and a /go recovery
-            # deliberately re-runs this function to rebuild routes — if a
-            # cache hit returned early without re-seeding them, that recovery
-            # would find nothing and the shopper would bounce to Google.
-            for seed in (entry[2] if len(entry) > 2 else []):
-                remember_merchant_route(query=query, scope=scope, **seed)
+        _reseed_routes(entry, query, scope)
+        age = now - ts
+        if age < CACHE_TTL:
+            return data
+        if data and age < STALE_TTL:
+            # THE FIX: an expired entry is stale, not useless. Hand the
+            # shopper the copy we already have (~50 ms) and pay for the
+            # refresh on a thread nobody is waiting on.
+            _refresh_in_background(query, scope, cache_key)
             return data
 
+    products = _fetch_product_prices(query, scope, cache_key)
+    if products is None:
+        # Upstream failed or timed out. A stale copy, however old, beats an
+        # empty page — this is the only path that may exceed STALE_TTL.
+        return entry[0] if entry else []
+    return products
+
+
+def _fetch_product_prices(query, scope, cache_key):
+    """The billable SerpApi call. Returns products, or None on failure.
+
+    None is distinct from []: an empty list is a feed that genuinely came back
+    with nothing, while None means the call failed and the caller should fall
+    back to whatever it already had.
+    """
+    now = time.time()
     params = {
         "engine":   "google_shopping",
         "q":        query,
@@ -920,7 +1112,13 @@ def get_product_prices(query, scope=""):
     }
 
     try:
-        results = GoogleSearch(params).get_dict()
+        search = GoogleSearch(params)
+        # google-search-results passes .timeout straight to requests.get and
+        # defaults it to 60000 — seconds, not milliseconds, so effectively no
+        # timeout. Without this line a slow upstream can hold a gunicorn
+        # thread (and the shopper) far past the 45 s gunicorn timeout.
+        search.timeout = SERPAPI_TIMEOUT
+        results = search.get_dict()
         products = []
         # Everything needed to rebuild the merchant routes from a cache hit.
         seeds = []
@@ -971,13 +1169,75 @@ def get_product_prices(query, scope=""):
                 "go_link": go_link or link,
             })
 
-        cache[cache_key] = (products, now, seeds)
+        # Stamped on completion, not on entry: with a 6 s ceiling on the call
+        # itself, stamping the start time would age every entry by however
+        # long upstream took and shorten the window this feed stays fresh.
+        with _state_lock:
+            cache[cache_key] = (products, time.time(), seeds)
         _prune_cache()
         return products
 
     except Exception as e:
         sentry_sdk.capture_exception(e)
-        return []
+        # None, not [] — the caller distinguishes "upstream failed, reuse what
+        # you have" from "the feed is genuinely empty".
+        return None
+
+
+# ===============================
+# CACHE PRE-WARMING (speed-test fix 01)
+# ===============================
+# Every category landing page is a known, finite URL, so there is no reason to
+# discover its feed on a shopper's request. This keeps all of them inside
+# CACHE_TTL, which means the synchronous path above is reserved for genuinely
+# novel searches — and even those are now bounded by SERPAPI_TIMEOUT.
+#
+# COST NOTE: each cycle is one billable SerpApi call per category, per gunicorn
+# worker (the cache is in-process, so workers cannot share warm entries). With
+# the defaults — 5 categories, 2 workers, every 15 minutes — that is 40 calls
+# an hour. Lower PREWARM_INTERVAL only if your quota allows it, and see
+# DEPLOY.md for the shared-cache option that removes the per-worker multiplier.
+_prewarm_started = False
+
+
+def _prewarm_once():
+    for slug, cat in category_rules.CATEGORIES.items():
+        try:
+            query = cat.build_query("")
+            cache_key = _cache_key_for(query, slug)
+            entry = cache.get(cache_key)
+            if entry and time.time() - entry[1] < CACHE_TTL:
+                continue          # still fresh, don't pay for it again
+            _fetch_product_prices(query, slug, cache_key)
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+
+
+def _prewarm_loop():
+    while True:
+        _prewarm_once()
+        time.sleep(PREWARM_INTERVAL)
+
+
+def start_prewarm():
+    """Start the pre-warm thread once per process.
+
+    No-ops without a SERPAPI_KEY so local runs, tests and CI never reach for a
+    paid upstream just by importing the app.
+    """
+    global _prewarm_started
+    if not PREWARM or _prewarm_started:
+        return
+    if not os.getenv("SERPAPI_KEY"):
+        logging.info("prewarm: skipped, no SERPAPI_KEY set")
+        return
+    _prewarm_started = True
+    threading.Thread(target=_prewarm_loop, name="prewarm", daemon=True).start()
+    logging.info("prewarm: started, every %ss for %d categories",
+                 PREWARM_INTERVAL, len(category_rules.CATEGORIES))
+
+
+start_prewarm()
 
 # ===============================
 # BLOCK PAGE HTML TEMPLATES
@@ -1502,9 +1762,57 @@ def api_trust_status():
 def health():
     return {"status": "ok"}
 
+# Assets worth having before they are needed. Deliberately assets only — the
+# previous list also precached five category pages, so a service-worker install
+# paid for five HTML documents (each a potential cold SerpApi miss) before the
+# visitor had asked for any of them. Navigations are handled by the fetch
+# handler's network-first path instead.
+SW_PRECACHE = [
+    "js/productfilter.js",
+    "notifications.js",
+    "fonts/bricolage-grotesque.woff2",
+    "fonts/spline-sans-mono.woff2",
+    "icons/icon-72.webp",
+    "icons/icon-128.webp",
+]
+
+
 @app.route("/sw.js")
 def sw():
-    return app.send_static_file("sw.js")
+    """Serve the service worker with its precache list resolved at runtime.
+
+    sw.js stays a plain JavaScript file on disk (lintable, editable); the
+    placeholders in it are substituted here so that:
+
+      * precached URLs are the same content-hashed URLs the pages request, so
+        the worker warms the cache the browser will actually consult rather than
+        storing a second, unversioned copy of every asset, and
+      * CACHE_NAME changes whenever any precached asset changes, which is what
+        makes the activate handler's old-cache sweep do something useful. The
+        fixed 'productfilter-v1' meant a deploy could leave a stale bundle
+        pinned in a returning visitor's browser indefinitely.
+    """
+    with open(os.path.join(app.static_folder, "sw.js"), encoding="utf-8") as fh:
+        body = fh.read()
+
+    urls = [static_url(name) for name in SW_PRECACHE]
+    urls.append(url_for("index"))          # the offline navigation fallback
+
+    fingerprint = hashlib.md5("|".join(urls).encode("utf-8")).hexdigest()[:10]
+
+    body = body.replace("'__CACHE_NAME__'",
+                        json.dumps("productfilter-" + fingerprint))
+    body = body.replace("__STATIC_ASSETS__", json.dumps(urls))
+    body = body.replace("'__NOTIFY_ICON__'",
+                        json.dumps(static_url("icons/icon-192.png")))
+    body = body.replace("'__NOTIFY_BADGE__'",
+                        json.dumps(static_url("icons/icon-72.png")))
+
+    resp = app.response_class(body, mimetype="text/javascript")
+    # A worker served from /sw.js already controls the whole origin, but being
+    # explicit survives someone moving the file later.
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
 
 @app.route("/manifest.json")
 def manifest():
@@ -1513,8 +1821,64 @@ def manifest():
 # ===============================
 # SECURITY HEADERS
 # ===============================
+def _cache_policy(resp):
+    """Attach a deliberate Cache-Control to every response (fix 02).
+
+    Before this, static assets went out as `no-cache` with a 1980-01-01
+    last-modified and HTML carried no cache-control at all, so every repeat
+    visit re-fetched every byte.
+    """
+    path = request.path
+
+    # Never cache an error, a redirect, or the result of a search POST.
+    if request.method != "GET" or resp.status_code >= 400:
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    if path.startswith("/static/"):
+        if request.args.get("v"):
+            # Content-hashed URL: the bytes behind it can never change.
+            resp.headers["Cache-Control"] = (
+                "public, max-age=%d, immutable" % STATIC_MAX_AGE)
+        else:
+            resp.headers["Cache-Control"] = (
+                "public, max-age=%d" % STATIC_UNVERSIONED_MAX_AGE)
+
+        # The upstream 1980-01-01 last-modified is a build artefact, not a
+        # fact about the file. Left in place it invites revalidation against a
+        # date that means nothing; the ETag Flask sends is the real validator.
+        last_modified = resp.headers.get("Last-Modified", "")
+        if "198" in last_modified[:20] and "1980" in last_modified:
+            del resp.headers["Last-Modified"]
+        return resp
+
+    # The service worker and the manifest control what everything else caches,
+    # so they must always be revalidated — a stale sw.js pins a stale app.
+    if path in ("/sw.js", "/manifest.json"):
+        resp.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
+        return resp
+
+    if path.startswith("/api/") or path.startswith("/go/"):
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    # HTML: no browser caching (prices must look live), but a shared cache may
+    # hold it briefly and serve it stale while revalidating — which is the same
+    # bargain fix 01 makes on the server side.
+    if resp.mimetype == "text/html":
+        resp.headers["Cache-Control"] = (
+            "public, max-age=0, s-maxage=%d, stale-while-revalidate=%d"
+            % (HTML_SMAX_AGE, HTML_STALE_WHILE_REVALIDATE))
+    else:
+        # Anything else (JSON probes such as /health) is state, not content.
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.after_request
 def add_headers(resp):
+    _cache_policy(resp)
+
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -1542,8 +1906,11 @@ def add_headers(resp):
     resp.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "img-src 'self' data: https:; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com; "
+        # Fonts are self-hosted as of speed-test fix 03, so neither Google
+        # font host is needed here any more — one less third-party origin
+        # this page is allowed to talk to.
+        "style-src 'self' 'unsafe-inline'; "
+        "font-src 'self'; "
         "script-src 'self'; "
         "connect-src 'self'; "
         "form-action 'self'; "
