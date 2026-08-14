@@ -1841,7 +1841,13 @@ def _cache_policy(resp):
     path = request.path
 
     # Never cache an error, a redirect, or the result of a search POST.
-    if request.method != "GET" or resp.status_code >= 400:
+    #
+    # HEAD counts as safe here, not as "not a GET". Werkzeug routes HEAD to the
+    # GET view but leaves request.method as "HEAD", so an earlier version of
+    # this check answered every HEAD with no-store — which is what a CDN, a
+    # link checker or `curl -I` sees, and it contradicted the policy the same
+    # URL returns on GET.
+    if request.method not in ("GET", "HEAD") or resp.status_code >= 400:
         resp.headers["Cache-Control"] = "no-store"
         return resp
 

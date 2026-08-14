@@ -175,6 +175,34 @@ def test_timeout_is_bounded():
           "search.timeout = SERPAPI_TIMEOUT" in src)
 
 
+def test_head_matches_get():
+    """A HEAD must return the same cache policy as the GET it mirrors.
+
+    Found in production: `curl -I` reported no-store on every URL while the
+    same URLs returned immutable on GET. Werkzeug routes HEAD to the GET view
+    but leaves request.method as "HEAD", so a `!= "GET"` check silently made
+    every HEAD uncacheable — the version CDNs, monitors and link checkers see.
+    """
+    print("8. HEAD returns the same cache policy as GET")
+    client = app.app.test_client()
+    import re as _re
+    home = client.get("/").get_data(as_text=True)
+    match = _re.search(r"/static/js/productfilter\.js\?v=[0-9a-f]+", home)
+    paths = ["/", "/sw.js", "/manifest.json"]
+    if match:
+        paths.append(match.group(0))
+
+    for path in paths:
+        get_cc = client.get(path).headers.get("Cache-Control")
+        head_cc = client.head(path).headers.get("Cache-Control")
+        check("HEAD %s matches GET" % path.split("?")[0], get_cc == head_cc,
+              "(GET=%r HEAD=%r)" % (get_cc, head_cc))
+
+    check("a POST is still never cached",
+          client.post("/", data={"product_query": "x"})
+                .headers.get("Cache-Control") == "no-store")
+
+
 def main():
     real = app._fetch_product_prices
     try:
@@ -185,6 +213,7 @@ def main():
         test_absent_key_fetches_synchronously()
         test_beyond_stale_ttl_is_not_served()
         test_timeout_is_bounded()
+        test_head_matches_get()
     finally:
         app._fetch_product_prices = real
         app.cache.clear()
