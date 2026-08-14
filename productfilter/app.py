@@ -227,6 +227,7 @@ CACHE_TTL = 20 * 60
 #                   indefinitely. google-search-results defaults its timeout
 #                   to 60000 *seconds*, i.e. no timeout at all; this caps the
 #                   worst case a shopper can experience.
+<<<<<<< Updated upstream
 #
 #                   IMPORTANT: this is a hang-guard, not a latency target, and
 #                   it MUST sit above SerpApi's normal cold response time. The
@@ -237,11 +238,17 @@ CACHE_TTL = 20 * 60
 #                   with margin while staying under gunicorn's 45 s worker
 #                   timeout, so a true hang still dies here, with a fallback,
 #                   instead of as a 502.
+=======
+>>>>>>> Stashed changes
 #   PREWARM         A background thread keeps every category slug warm, so in
 #                   normal operation the synchronous path is never taken for
 #                   a category landing page at all.
 STALE_TTL = int(os.getenv("STALE_TTL", str(24 * 60 * 60)))
+<<<<<<< Updated upstream
 SERPAPI_TIMEOUT = float(os.getenv("SERPAPI_TIMEOUT", "30"))
+=======
+SERPAPI_TIMEOUT = float(os.getenv("SERPAPI_TIMEOUT", "6"))
+>>>>>>> Stashed changes
 
 # Ceiling on concurrent background refreshes. Every refresh is a billable
 # SerpApi call, and each gunicorn worker holds its own in-process cache, so
@@ -1841,6 +1848,7 @@ def _cache_policy(resp):
     path = request.path
 
     # Never cache an error, a redirect, or the result of a search POST.
+<<<<<<< Updated upstream
     #
     # HEAD counts as safe here, not as "not a GET". Werkzeug routes HEAD to the
     # GET view but leaves request.method as "HEAD", so an earlier version of
@@ -1848,6 +1856,9 @@ def _cache_policy(resp):
     # link checker or `curl -I` sees, and it contradicted the policy the same
     # URL returns on GET.
     if request.method not in ("GET", "HEAD") or resp.status_code >= 400:
+=======
+    if request.method != "GET" or resp.status_code >= 400:
+>>>>>>> Stashed changes
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
