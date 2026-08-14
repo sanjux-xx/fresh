@@ -512,7 +512,7 @@ footer .brand{color:#fff}
               <span class="trust trust-{{ ot.badge|default('ok') }}" title="{{ ot.verdict }}">🛡 <span class="n">{{ ot.score }}</span></span>
               {% endif %}
             </span>
-            <a class="amt" href="{{ (offer.go_link or offer.link)|buy_url }}" target="_blank" rel="noopener noreferrer">₹{{ "{:,.0f}".format(offer.price) }}</a>>
+            <a class="amt" href="{{ (offer.go_link or offer.link)|buy_url }}" target="_blank" rel="noopener noreferrer">₹{{ "{:,.0f}".format(offer.price) }}</a>
           </div>
           {% endfor %}
         </details>

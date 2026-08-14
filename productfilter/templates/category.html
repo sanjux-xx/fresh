@@ -419,7 +419,7 @@ footer{background:var(--ink);color:#CFD3C6;padding:20px 0}
                   data-price="{{ p.price_value }}"
                   data-link="{{ p.link|safe_url }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="lbl">Alert</span></button>
           {% endif %}
-          <a class="buy" href="{{ (p.go_link or p.link)|buy_url }}" target="_blank" rel="noopener noreferrer">View</a>
+          <a class="buy" href="{{ (p.go_link or p.link)|buy_url }}" target="_blank" rel="noopener noreferrer">View →</a>
         </span>
       </div>
       {% endfor %}
