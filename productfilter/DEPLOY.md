@@ -30,6 +30,21 @@ Set these in your hosting provider's config panel. Full annotated list is in
     GOOGLE_SAFE_BROWSING_KEY=   widens scam detection
     SENTRY_DSN=                 your existing DSN works unchanged
 
+**Performance (added for the 2026-08-13 speed-test fixes — all have defaults)**
+
+    PREWARM=1               keep category feeds warm in the background
+    PREWARM_INTERVAL=900    seconds between pre-warm cycles
+    STALE_TTL=86400         how long an expired feed may still be served
+    SERPAPI_TIMEOUT=6       hard ceiling on one upstream call, in seconds
+    MAX_REFRESH_THREADS=2   concurrent background refreshes per worker
+    STATIC_MAX_AGE=31536000 lifetime of a content-hashed /static URL
+    HTML_SMAX_AGE=120       how long a shared cache may hold an HTML page
+
+Cost note: pre-warming costs one SerpApi call per category per worker per
+cycle. With the defaults (5 categories, 2 workers, 15 minutes) that is about
+40 calls an hour, and it is what keeps the cold path off your visitors. Raise
+`PREWARM_INTERVAL` to spend less, or set `PREWARM=0` to opt out entirely.
+
 Everything else has a working default. Do not set `TRUSTSCAN_PUBLIC_DEEP=1`
 unless you want anonymous callers to trigger outbound RDAP lookups.
 
@@ -97,10 +112,51 @@ what they structurally could not reach:
 - [ ] Install to the home screen, uninstall, revisit. Does the install offer
       come back?
 - [ ] Open a category page on your phone. Is anything cramped or overflowing?
+- [ ] DevTools → Application → Service Workers: does it say **activated**? The
+      install used to fail on a missing icon path, so this is worth confirming
+      once rather than assuming.
+- [ ] Load a page twice. On the second load, every `/static/...` request should
+      come from disk cache, not the network.
 
 ---
 
-## 6. Known limitations
+## 6. Verify the performance fixes on production
+
+The speed test that prompted these changes measured from a single vantage point
+through an egress proxy, so two of its findings need confirming against your own
+edge before you act on them further.
+
+**HTTP/2 (report fix 05, not changed in code).** The report saw HTTP/1.1 only,
+but flagged that the downgrade may have been the measurement proxy rather than
+your edge. Check it directly:
+
+    curl -sI --http2 https://productfilter.dev/ -o /dev/null -w '%{http_version}\n'
+
+If that prints `1.1`, enable h2 at the istio/envoy layer that fronts the app —
+it is a gateway setting, not something this repo controls. If it prints `2`, the
+finding was an artefact of the test environment and nothing needs doing.
+
+**Cold-path TTFB (report fix 01, fixed in code).** Re-measure the route the
+report found worst, first request after a deploy and again a minute later:
+
+    curl -s -o /dev/null -w 'cold %{time_starttransfer}s\n' https://productfilter.dev/category/fruits
+    curl -s -o /dev/null -w 'warm %{time_starttransfer}s\n' https://productfilter.dev/category/fruits
+
+The report's baseline was 11.54 s cold / 50 ms warm. With pre-warming on, the
+first number should now look like the second. If it does not, check that
+`SERPAPI_KEY` is set in the deployed environment — pre-warming deliberately
+no-ops without it, and logs `prewarm: skipped, no SERPAPI_KEY set` at startup.
+
+**Cache headers.** One request confirms the whole of fix 02:
+
+    curl -sI https://productfilter.dev/ | grep -i cache-control
+    curl -sI "$(curl -s https://productfilter.dev/ | grep -o '/static/js/productfilter.js?v=[a-f0-9]*' | head -1 | sed 's|^|https://productfilter.dev|')" | grep -i cache-control
+
+The HTML should report `s-maxage`, the hashed asset `max-age=31536000, immutable`.
+
+---
+
+## 7. Known limitations
 
 - **Rate limiting is per-process.** With N gunicorn workers the effective limit
   is 50 × N per minute. A shared store would be needed for a hard limit.

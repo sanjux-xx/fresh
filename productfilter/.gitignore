@@ -1,0 +1,22 @@
+# Secrets — never commit a filled-in environment file. .env.example is the
+# tracked, empty template; .env is yours and stays local.
+.env
+.env.*
+!.env.example
+
+# AI verdict cache written at runtime (see AI_CACHE_PATH)
+.ai_cache.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
