@@ -241,7 +241,7 @@ CACHE_TTL = 20 * 60
 #                   normal operation the synchronous path is never taken for
 #                   a category landing page at all.
 STALE_TTL = int(os.getenv("STALE_TTL", str(24 * 60 * 60)))
-SERPAPI_TIMEOUT = float(os.getenv("SERPAPI_TIMEOUT", "30"))
+SERPAPI_TIMEOUT = max(float(os.getenv("SERPAPI_TIMEOUT", "30")), 15.0)
 
 # Ceiling on concurrent background refreshes. Every refresh is a billable
 # SerpApi call, and each gunicorn worker holds its own in-process cache, so
