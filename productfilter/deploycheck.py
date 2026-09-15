@@ -113,6 +113,11 @@ STDLIB = set(getattr(sys, "stdlib_module_names", ())) or {
     "ipaddress", "ssl", "secrets", "uuid", "textwrap", "difflib", "struct",
     "decimal", "statistics", "operator", "contextlib", "dataclasses", "gzip",
     "mimetypes",
+    # Added with the 2026-09-15 credit-waste fix: hmac backs the constant-time
+    # token compare on /api/credit-usage, fcntl backs the single-worker
+    # pre-warm lock. Both are stdlib; without them here this check reports a
+    # phantom missing dependency on 3.9 runtimes.
+    "hmac", "fcntl",
 }
 LOCAL = {os.path.splitext(f)[0] for f in PY_FILES}
 DIST = {"flask": "flask", "requests": "requests", "serpapi": "google-search-results",

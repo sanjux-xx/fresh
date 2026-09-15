@@ -120,10 +120,27 @@ self.addEventListener('message', (event) => {
   }
 });
 
+// How many alerts one check cycle may look up. Each lookup is a request the
+// shopper did not make, fired by a 30-minute timer; before the server started
+// answering these from cache, each one was also a billable SerpApi search, so
+// a user with thirty saved alerts quietly spent thirty credits every half hour
+// on every device they had the app installed on. The server-side fix is the
+// real one (see /api/price-check), but there is no reason for the client to ask
+// for more than it can usefully act on in one go either — the rest are picked
+// up on the next cycle.
+const MAX_ALERTS_PER_CHECK = 8;
+
 async function checkPriceAlerts(alerts) {
   if (!alerts || alerts.length === 0) return;
 
-  for (const alert of alerts) {
+  // Closest to its target first, so the alerts most likely to actually fire
+  // are the ones that get checked when the list is longer than the cap.
+  const queue = alerts
+    .slice()
+    .sort((a, b) => (a.target_price || 0) - (b.target_price || 0))
+    .slice(0, MAX_ALERTS_PER_CHECK);
+
+  for (const alert of queue) {
     try {
       const res = await fetch(`/api/price-check?title=${encodeURIComponent(alert.title)}`);
       if (!res.ok) continue;

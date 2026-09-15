@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, redirect, url_for
 from serpapi import GoogleSearch
 import requests.exceptions
 import hashlib
+import hmac
 import json
 import mimetypes
 import re
@@ -252,8 +253,75 @@ MAX_REFRESH_THREADS = int(os.getenv("MAX_REFRESH_THREADS", "2"))
 
 # Pre-warming is on by default but no-ops without a SERPAPI_KEY, so local and
 # CI runs stay free. Set PREWARM=0 to disable in production.
+#
+# CREDIT-WASTE FIX (2026-09-15). The pre-warm loop was the single largest
+# consumer of the SerpApi quota, and none of what it spent was driven by a
+# shopper:
+#
+#   * It ran in EVERY gunicorn worker. The cache is in-process, so two workers
+#     meant two independent loops paying twice for identical feeds.
+#   * It ran around the clock. Overnight, when nobody was on the site, it kept
+#     paying to keep five feeds warm for nobody — visible on the SerpApi
+#     dashboard as a dead-flat floor of successful searches at 02:00-08:00 UTC
+#     with zero failures, which is the signature of a cron, not of users.
+#   * PREWARM_INTERVAL (900) sat below CACHE_TTL (1200), so every other cycle
+#     was a no-op and the real cadence was an unintuitive 1800 s.
+#   * It had no spend ceiling of any kind.
+#
+# Four gates now stand in front of it. Each one is independently switchable so
+# a deployment can trade credits for warmth as it likes:
+#
+#   PREWARM_SINGLE_WORKER  Only one process in the container pre-warms, chosen
+#                          by an OS-level lock. Removes the per-worker
+#                          multiplier outright.
+#   PREWARM_ACTIVE_HOURS   A UTC window outside which cycles are skipped. The
+#                          default covers Indian shopping hours and leaves the
+#                          dead of night unpaid.
+#   PREWARM_DEMAND_WINDOW  A category is only kept warm if somebody actually
+#                          visited it recently. A category nobody browses stops
+#                          costing anything until it is browsed again.
+#   AUTO_CREDIT_DAILY_BUDGET  A hard daily ceiling on every call no shopper is
+#                          waiting for (pre-warm + background refresh). When it
+#                          is reached the automatic paths stand down for the
+#                          rest of the UTC day; user-facing searches are never
+#                          blocked by it.
 PREWARM = os.getenv("PREWARM", "1") in ("1", "true", "True")
-PREWARM_INTERVAL = int(os.getenv("PREWARM_INTERVAL", str(15 * 60)))
+# Clamped to CACHE_TTL: an interval below the freshness window just burns
+# cycles that find the entry still fresh and skip, which made the effective
+# cadence twice the configured one and impossible to reason about.
+PREWARM_INTERVAL = max(int(os.getenv("PREWARM_INTERVAL", str(30 * 60))),
+                       CACHE_TTL)
+PREWARM_SINGLE_WORKER = os.getenv("PREWARM_SINGLE_WORKER", "1") in (
+    "1", "true", "True")
+# "HH-HH" in UTC, inclusive of the start hour and exclusive of the end hour.
+# Default 03-19 UTC == 08:30-00:30 IST. Set to "0-24" to pre-warm all day.
+PREWARM_ACTIVE_HOURS = os.getenv("PREWARM_ACTIVE_HOURS", "3-19")
+# Seconds since a category page was last requested, beyond which that category
+# is no longer worth paying to keep warm. Set to 0 to warm every category
+# unconditionally (the old behaviour).
+PREWARM_DEMAND_WINDOW = int(os.getenv("PREWARM_DEMAND_WINDOW", str(6 * 60 * 60)))
+# Where workers record "this category was just visited". The pre-warm loop runs
+# in one worker but demand arrives at all of them, so last-seen has to be
+# shared. A small JSON file under /tmp is enough and needs no new services.
+PREWARM_STATE_PATH = os.getenv("PREWARM_STATE_PATH",
+                               "/tmp/productfilter-prewarm.json")
+PREWARM_LOCK_PATH = os.getenv("PREWARM_LOCK_PATH",
+                              "/tmp/productfilter-prewarm.lock")
+
+# Daily ceiling on unattended billable calls. 0 disables the ceiling.
+AUTO_CREDIT_DAILY_BUDGET = int(os.getenv("AUTO_CREDIT_DAILY_BUDGET", "150"))
+
+# /api/price-check used to run a fresh billable search per alert title. Titles
+# are full product names, so they never matched a cached feed and every check
+# was a guaranteed cache miss — one credit per alert, per device, every 30
+# minutes, for as long as the alert existed. Alerts are now answered out of the
+# category feeds already in cache (the alert was created from one of those
+# cards, so the product is in there), and the upstream path is opt-in.
+PRICE_CHECK_ALLOW_UPSTREAM = os.getenv("PRICE_CHECK_ALLOW_UPSTREAM", "0") in ("1", "true", "True")
+
+# Optional bearer token guarding /api/credit-usage. Unset means the endpoint
+# does not exist — it reports spend, which is nobody's business but yours.
+CREDIT_STATS_TOKEN = os.getenv("CREDIT_STATS_TOKEN", "")
 
 # Deep trust mode also pulls RDAP domain age + DNS per unique domain. Results
 # are cached 24h per domain, but the first lookup costs ~1s, so it is off by
@@ -279,6 +347,125 @@ MAX_CACHE_ENTRIES = int(os.getenv("MAX_CACHE_ENTRIES", "500"))
 MAX_TRACKED_IPS = int(os.getenv("MAX_TRACKED_IPS", "10000"))
 
 _state_lock = threading.RLock()
+
+
+# ===============================
+# CREDIT ACCOUNTING (credit-waste fix 2026-09-15)
+# ===============================
+# Every billable SerpApi call now declares who asked for it. Without this the
+# only place spend was visible was the SerpApi dashboard, which reports a total
+# per hour and cannot tell a shopper's search apart from a background loop —
+# exactly the question that took a code audit to answer.
+#
+# Sources:
+#   user_search       a person typed something or opened a cold page. Legitimate.
+#   swr_refresh       a stale feed refreshed behind a real request. Semi-automatic.
+#   prewarm           the background loop. Nobody is waiting on this.
+#   merchant_resolve  a /go click. One per real click.
+#   price_check       a price-alert lookup that had to go upstream.
+#
+# Counts are per-process and reset at UTC midnight, which is also the window
+# the daily budget is measured over.
+AUTOMATIC_SOURCES = ("prewarm", "swr_refresh", "price_check")
+
+_credit_lock = threading.Lock()
+_credit_counts = defaultdict(int)
+_credit_day = None
+
+# Attribution rides on a thread-local rather than on a function argument.
+# Pre-warm and background refresh each run on their own thread, so the thread
+# *is* the source, and threading it through as a parameter would have changed
+# the signature of the fetch function that the test suite replaces with a
+# stub — a fix for a billing bug should not break the tests that guard the
+# cache. Anything that does not declare itself is a user-facing search, which
+# is the safe default: it is never silenced by the unattended budget.
+_credit_ctx = threading.local()
+
+
+def _current_credit_source():
+    return getattr(_credit_ctx, "source", "user_search")
+
+
+class crediting(object):
+    """Label every billable call made inside this block.
+
+    Restores the previous label on exit, so nesting (a /go resolve made while
+    serving a page, say) cannot leave the wrong source stuck on the thread.
+    """
+
+    def __init__(self, source):
+        self.source = source
+        self.previous = None
+
+    def __enter__(self):
+        self.previous = getattr(_credit_ctx, "source", None)
+        _credit_ctx.source = self.source
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.previous is None:
+            try:
+                del _credit_ctx.source
+            except AttributeError:
+                pass
+        else:
+            _credit_ctx.source = self.previous
+        return False
+
+
+def _utc_day():
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _roll_credit_day_locked():
+    global _credit_day
+    today = _utc_day()
+    if _credit_day != today:
+        _credit_day = today
+        _credit_counts.clear()
+
+
+def note_credit(source):
+    """Record one billable upstream call against its originating source."""
+    with _credit_lock:
+        _roll_credit_day_locked()
+        _credit_counts[source] += 1
+
+
+def credit_snapshot():
+    """Today's spend, broken down by who caused it."""
+    with _credit_lock:
+        _roll_credit_day_locked()
+        counts = dict(_credit_counts)
+    automatic = sum(counts.get(s, 0) for s in AUTOMATIC_SOURCES)
+    total = sum(counts.values())
+    return {
+        "utc_day": _utc_day(),
+        "by_source": counts,
+        "automatic": automatic,
+        "user_driven": total - automatic,
+        "total": total,
+        "automatic_daily_budget": AUTO_CREDIT_DAILY_BUDGET,
+        "automatic_budget_left": (
+            max(0, AUTO_CREDIT_DAILY_BUDGET - automatic)
+            if AUTO_CREDIT_DAILY_BUDGET > 0 else None),
+        "pid": os.getpid(),
+    }
+
+
+def auto_credit_available():
+    """False once unattended calls have used up today's budget.
+
+    Only the automatic paths consult this. A shopper waiting on a page is never
+    turned away because a background loop spent the quota.
+    """
+    if AUTO_CREDIT_DAILY_BUDGET <= 0:
+        return True
+    with _credit_lock:
+        _roll_credit_day_locked()
+        spent = sum(_credit_counts.get(s, 0) for s in AUTOMATIC_SOURCES)
+    return spent < AUTO_CREDIT_DAILY_BUDGET
+
 
 def _prune_cache():
     with _state_lock:
@@ -868,23 +1055,6 @@ def remember_merchant_route(product_id, token, store, fallback,
         "ts": time.time(),
     }
     _prune_merchant_routes()
-    
-        # Pre-resolve in the background so the URL is ready before any click.
-    # Only launch a thread when there is no cached URL yet (or TTL has
-    # expired) and no thread is already working on this product.
-    now = time.time()
-    needs_resolve = not resolved or (now - resolved_ts >= MERCHANT_TTL)
-    if needs_resolve:
-        with _merchant_resolve_lock:
-            if product_id not in _merchant_resolve_inflight:
-                _merchant_resolve_inflight.add(product_id)
-                t = threading.Thread(
-                    target=_resolve_merchant_bg,
-                    args=(product_id,),
-                    daemon=True,
-                )
-                t.start()
-                
     return merchant_route_path(product_id, query, scope)
 
 
@@ -972,6 +1142,7 @@ def resolve_merchant_link(product_id):
     }
 
     try:
+        note_credit("merchant_resolve")
         search = GoogleSearch(params)
         # The client takes its request timeout as an attribute, not as a
         # params key — a "timeout" inside params_dict would be forwarded to
@@ -1023,24 +1194,6 @@ def resolve_merchant_link(product_id):
 _refresh_inflight = set()
 _refresh_lock = threading.Lock()
 
-# Product IDs whose merchant URL is currently being pre-resolved in the
-# background. Same single-flight pattern as _refresh_inflight: if a product
-# appears in multiple concurrent searches, only one SerpApi call is made.
-_merchant_resolve_inflight = set()
-_merchant_resolve_lock = threading.Lock()
-def _resolve_merchant_bg(product_id):
-    """Resolve a merchant URL in a background daemon thread.
-    Called by remember_merchant_route so that the resolved URL is warm in
-    merchant_routes before a shopper ever clicks the /go link, keeping
-    SerpApi entirely out of the redirect critical path.
-    """
-    try:
-        resolve_merchant_link(product_id)
-    except Exception:
-        pass
-    finally:
-        with _merchant_resolve_lock:
-            _merchant_resolve_inflight.discard(product_id)
 
 def _cache_key_for(query, scope=""):
     # The cache key carries the scope (category slug) as well as the query.
@@ -1084,12 +1237,20 @@ def _refresh_in_background(query, scope, cache_key):
     not a failure: the stale copy is still served, and the next request after
     this one finishes will see fresh data.
     """
+    # A background refresh is spend nobody is waiting on, so it answers to the
+    # daily automatic budget. Declining leaves the stale copy in place, which
+    # STALE_TTL already allows for up to 24 h — the shopper sees a page either
+    # way, and the feed refreshes on the first request after midnight UTC.
+    if not auto_credit_available():
+        logging.info("swr-refresh: skipped, automatic daily budget spent")
+        return
     if not _claim_refresh(cache_key):
         return
 
     def run():
         try:
-            _fetch_product_prices(query, scope, cache_key)
+            with crediting("swr_refresh"):
+                _fetch_product_prices(query, scope, cache_key)
         except Exception as exc:            # pragma: no cover - defensive
             sentry_sdk.capture_exception(exc)
         finally:
@@ -1104,6 +1265,9 @@ def get_product_prices(query, scope=""):
     Fresh  (age < CACHE_TTL)  -> served as-is.
     Stale  (age < STALE_TTL)  -> served immediately, refreshed in background.
     Absent                    -> one synchronous, timeout-bounded fetch.
+
+    Spend made here is attributed to whatever `crediting(...)` block the caller
+    is inside, defaulting to a user-facing search.
     """
     cache_key = _cache_key_for(query, scope)
     now = time.time()
@@ -1136,8 +1300,14 @@ def _fetch_product_prices(query, scope, cache_key):
     None is distinct from []: an empty list is a feed that genuinely came back
     with nothing, while None means the call failed and the caller should fall
     back to whatever it already had.
+
+    The credit is recorded before the call, not after, so a call that times out
+    still shows up as money spent — it is billed either way. See the CREDIT
+    ACCOUNTING section for where the source label comes from.
     """
     now = time.time()
+    source = _current_credit_source()
+    note_credit(source)
     params = {
         "engine":   "google_shopping",
         "q":        query,
@@ -1183,6 +1353,9 @@ def _fetch_product_prices(query, scope, cache_key):
                 level="warning",
                 data={"query": query, "scope": scope},
             )
+            # The retry is a second billable search, so it is counted as one.
+            # Undercounting here is how a retry storm hides inside a quota.
+            note_credit(source)
             results = _do_search(SERPAPI_NUM_FALLBACK)
             
         products = []
@@ -1258,35 +1431,176 @@ def _fetch_product_prices(query, scope, cache_key):
 # CACHE_TTL, which means the synchronous path above is reserved for genuinely
 # novel searches — and even those are now bounded by SERPAPI_TIMEOUT.
 #
-# COST NOTE: each cycle is one billable SerpApi call per category, per gunicorn
-# worker (the cache is in-process, so workers cannot share warm entries). With
-# the defaults — 5 categories, 2 workers, every 15 minutes — that is 40 calls
-# an hour. Lower PREWARM_INTERVAL only if your quota allows it, and see
-# DEPLOY.md for the shared-cache option that removes the per-worker multiplier.
+# COST NOTE (rewritten 2026-09-15 — this loop was the credit leak).
+#
+# Before: one billable call per category, per gunicorn worker, per cycle,
+# forever, with no demand check and no ceiling. At the shipped defaults — 5
+# categories, 2 workers, a 900 s interval against a 1200 s freshness window —
+# that was ~20 calls an hour, ~480 a day, every day, whether or not a single
+# person visited the site. On the SerpApi dashboard it appeared as a flat floor
+# of successful searches that never dropped to zero even at 03:00 UTC.
+#
+# After: one worker pre-warms (PREWARM_SINGLE_WORKER), only inside the active
+# window (PREWARM_ACTIVE_HOURS), only for categories somebody actually browsed
+# recently (PREWARM_DEMAND_WINDOW), and only while the unattended daily budget
+# holds (AUTO_CREDIT_DAILY_BUDGET). An idle site now costs nothing. A busy site
+# pays at most one call per browsed category per PREWARM_INTERVAL.
+#
+# Warmth is not lost when a gate closes: STALE_TTL (24 h) means the first
+# visitor to a cold-but-not-ancient category is still served instantly from the
+# stale copy while a refresh runs behind them.
 _prewarm_started = False
+_prewarm_lock_handle = None
 
 
+# ── Shared demand signal ───────────────────────────────────────────────────
+# The loop lives in one worker but requests land on all of them, so "was this
+# category visited recently" has to cross process boundaries. A small JSON file
+# is sufficient and introduces no new dependency. Failures here are always
+# non-fatal: if the state file cannot be read or written, pre-warm falls back
+# to treating the category as in demand, i.e. to the old behaviour, rather than
+# silently going cold.
+def _read_prewarm_state():
+    try:
+        with open(PREWARM_STATE_PATH, "r") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def note_category_demand(slug):
+    """Record that a shopper just asked for this category."""
+    if PREWARM_DEMAND_WINDOW <= 0:
+        return
+    try:
+        state = _read_prewarm_state()
+        now = time.time()
+        # Only write when the stamp is meaningfully old. Without this every
+        # request would rewrite the file, which on a busy category turns a
+        # cheap read into constant disk churn.
+        if now - float(state.get(slug, 0) or 0) < 60:
+            return
+        state[slug] = now
+        tmp = PREWARM_STATE_PATH + ".%d.tmp" % os.getpid()
+        with open(tmp, "w") as fh:
+            json.dump(state, fh)
+        os.replace(tmp, PREWARM_STATE_PATH)     # atomic, no torn reads
+    except Exception:
+        pass
+
+
+def _category_in_demand(slug, state):
+    """True when this category is worth paying to keep warm."""
+    if PREWARM_DEMAND_WINDOW <= 0:
+        return True                              # demand gating disabled
+    try:
+        last = float(state.get(slug, 0) or 0)
+    except (TypeError, ValueError):
+        return True
+    return (time.time() - last) < PREWARM_DEMAND_WINDOW
+
+
+# ── Active-hours gate ──────────────────────────────────────────────────────
+def _parse_active_hours(spec):
+    """"3-19" -> (3, 19). Returns (0, 24) — always on — on anything unparseable."""
+    try:
+        start, end = str(spec).split("-", 1)
+        start, end = int(start.strip()), int(end.strip())
+        if 0 <= start <= 24 and 0 <= end <= 24 and start != end:
+            return start, end
+    except Exception:
+        pass
+    return 0, 24
+
+
+def _in_active_hours(now=None):
+    start, end = _parse_active_hours(PREWARM_ACTIVE_HOURS)
+    if (start, end) == (0, 24):
+        return True
+    hour = time.gmtime(now if now is not None else time.time()).tm_hour
+    if start < end:
+        return start <= hour < end
+    # Window wraps midnight UTC, e.g. "19-3".
+    return hour >= start or hour < end
+
+
+# ── Single-worker gate ─────────────────────────────────────────────────────
+def _claim_prewarm_slot():
+    """True in exactly one process per host, via an advisory file lock.
+
+    The lock is held for the process lifetime by keeping the handle in a module
+    global. A worker that dies releases it automatically — the OS drops the
+    lock with the file descriptor — so the next worker to restart picks the job
+    up rather than pre-warming stopping for good.
+
+    On any platform without fcntl, or if anything about the lock fails, the
+    caller is allowed to proceed. Degrading to the old duplicate-spend
+    behaviour is preferable to a deployment whose feeds silently go cold.
+    """
+    global _prewarm_lock_handle
+    if not PREWARM_SINGLE_WORKER:
+        return True
+    try:
+        import fcntl
+    except ImportError:
+        return True
+    try:
+        handle = open(PREWARM_LOCK_PATH, "w")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError):
+        return False                             # another worker owns it
+    except Exception:
+        return True
+    handle.write(str(os.getpid()))
+    handle.flush()
+    _prewarm_lock_handle = handle                # keep it open == keep the lock
+    return True
+
+
+# ── The loop ───────────────────────────────────────────────────────────────
 def _prewarm_once():
+    """One pass over the categories. Returns the number of credits spent."""
+    if not _in_active_hours():
+        return 0
+
+    state = _read_prewarm_state()
+    spent = 0
+
     for slug, cat in category_rules.CATEGORIES.items():
+        if not auto_credit_available():
+            logging.info("prewarm: stopping cycle, automatic daily budget spent")
+            break
+        if not _category_in_demand(slug, state):
+            continue                             # nobody has browsed it lately
         try:
             query = cat.build_query("")
             cache_key = _cache_key_for(query, slug)
             entry = cache.get(cache_key)
             if entry and time.time() - entry[1] < CACHE_TTL:
-                continue          # still fresh, don't pay for it again
-            _fetch_product_prices(query, slug, cache_key)
+                continue                         # still fresh, don't pay again
+            with crediting("prewarm"):
+                _fetch_product_prices(query, slug, cache_key)
+            spent += 1
         except Exception as exc:
             sentry_sdk.capture_exception(exc)
+
+    return spent
 
 
 def _prewarm_loop():
     while True:
-        _prewarm_once()
+        try:
+            _prewarm_once()
+        except Exception as exc:                 # pragma: no cover - defensive
+            # A loop that dies on one bad cycle stops warming forever and the
+            # only symptom is slow pages, so it is swallowed and retried.
+            sentry_sdk.capture_exception(exc)
         time.sleep(PREWARM_INTERVAL)
 
 
 def start_prewarm():
-    """Start the pre-warm thread once per process.
+    """Start the pre-warm thread at most once per host.
 
     No-ops without a SERPAPI_KEY so local runs, tests and CI never reach for a
     paid upstream just by importing the app.
@@ -1297,10 +1611,18 @@ def start_prewarm():
     if not os.getenv("SERPAPI_KEY"):
         logging.info("prewarm: skipped, no SERPAPI_KEY set")
         return
+    if not _claim_prewarm_slot():
+        logging.info("prewarm: skipped, another worker holds the pre-warm lock")
+        return
     _prewarm_started = True
     threading.Thread(target=_prewarm_loop, name="prewarm", daemon=True).start()
-    logging.info("prewarm: started, every %ss for %d categories",
-                 PREWARM_INTERVAL, len(category_rules.CATEGORIES))
+    start, end = _parse_active_hours(PREWARM_ACTIVE_HOURS)
+    logging.info(
+        "prewarm: started in pid %d, every %ss, %d categories, "
+        "active %02d:00-%02d:00 UTC, demand window %ss, daily auto budget %s",
+        os.getpid(), PREWARM_INTERVAL, len(category_rules.CATEGORIES),
+        start, end, PREWARM_DEMAND_WINDOW,
+        AUTO_CREDIT_DAILY_BUDGET or "unlimited")
 
 
 start_prewarm()
@@ -1525,6 +1847,13 @@ def category_page(category_name):
             min_score=trustscan.MIN_SCORE,
         )
 
+    # Tell the pre-warm loop this category is alive. Recorded before the feed
+    # is fetched, and only for real clients: if a crawler's pass counted as
+    # demand, a single Googlebot visit would keep all five categories warm (and
+    # billable) for the whole demand window with no shopper involved.
+    if not _is_automated_client():
+        note_category_demand(cat.slug)
+
     search_term = (request.form.get("search", "").strip()
                    if request.method == "POST" else "")
 
@@ -1732,6 +2061,43 @@ def render_untrusted_merchant_page(link, store, verdict):
     return html, 200
 
 
+def _normalise_title(text):
+    """Loose key for matching a stored alert title against a cached listing."""
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _find_in_cached_feeds(title):
+    """Locate one product across every feed already in cache. Costs nothing.
+
+    Price alerts are created from a card the shopper was looking at, so the
+    product is by definition a row in one of the category feeds this worker has
+    already paid for. Searching those feeds answers the alert for free and with
+    data no staler than the feed itself.
+    """
+    want = _normalise_title(title)
+    if not want:
+        return None
+
+    best = None
+    best_ts = -1.0
+    with _state_lock:
+        entries = list(cache.items())
+
+    for _key, entry in entries:
+        products, ts = (entry[0] or []), entry[1]
+        for product in products:
+            have = _normalise_title(product.get("title"))
+            if not have:
+                continue
+            # Exact match, or either title contained in the other: feeds
+            # sometimes append a variant suffix ("... (8GB/128GB)") that the
+            # stored alert title does not carry.
+            if have == want or want in have or have in want:
+                if ts > best_ts:
+                    best, best_ts = product, ts
+    return best
+
+
 @app.route("/api/price-check")
 def price_check():
     title = request.args.get("title", "").strip()
@@ -1740,9 +2106,44 @@ def price_check():
     if not is_valid_query(title):
         return {"error": "Invalid query"}, 400
 
-    products = get_product_prices(title)
+    # CREDIT-WASTE FIX. This endpoint is unauthenticated and takes an arbitrary
+    # title, and it used to hand that title straight to a billable search. A
+    # product title is a long, specific string, so it never matched a cache key
+    # and every single check was a guaranteed paid call — one per saved alert,
+    # per device, every 30 minutes (see static/sw.js), forever. Ten users with
+    # five alerts each was 800 credits a day for a background feature nobody
+    # was watching, and anyone who found the URL could spend the quota at the
+    # rate limit (50/min) just by varying the title.
+    #
+    # Alerts are now answered from the feeds already in cache, which is where
+    # the alert came from in the first place.
+    if _is_automated_client():
+        return {"current_price": None, "link": None, "source": "blocked"}, 403
+
+    cached = _find_in_cached_feeds(title)
+    if cached is not None:
+        value = extract_price(cached)
+        price = None if value == float("inf") else value
+        link = trustscan.safe_link(cached.get("link", ""))
+        return {
+            "current_price": price,
+            "link": link if link != "#" else None,
+            "store": cached.get("store", ""),
+            "source": "cache",
+        }
+
+    # Nothing in cache. Going upstream from here is a paid call triggered by a
+    # background timer rather than by a person, so it is opt-in and capped by
+    # the same unattended budget as pre-warm.
+    if not PRICE_CHECK_ALLOW_UPSTREAM:
+        return {"current_price": None, "link": None, "source": "miss"}
+    if not auto_credit_available():
+        return {"current_price": None, "link": None, "source": "budget"}
+
+    with crediting("price_check"):
+        products = get_product_prices(title)
     if not products:
-        return {"current_price": None, "link": None}
+        return {"current_price": None, "link": None, "source": "upstream"}
 
     def safe_price(p):
         try:
@@ -1771,7 +2172,84 @@ def price_check():
     return {
         "current_price": price,
         "link": link if link != "#" else None,
-        "store": best.get("store", "")
+        "store": best.get("store", ""),
+        "source": "upstream",
+    }
+
+
+# ===============================
+# CREDIT USAGE (credit-waste fix 2026-09-15)
+# ===============================
+@app.route("/api/credit-usage")
+def credit_usage():
+    """Today's SerpApi spend, attributed to whoever caused it.
+
+    This is the endpoint that answers "is my quota going to users or to my own
+    code?" without a code audit. Compare `user_driven` against `automatic`:
+
+        curl -H "Authorization: Bearer $CREDIT_STATS_TOKEN" \\
+             https://your-host/api/credit-usage
+
+    Counts are per worker process and reset at UTC midnight, so with more than
+    one worker, poll it a few times — `pid` tells you which one answered.
+
+    Requires CREDIT_STATS_TOKEN. Unset, the route 404s: spend figures are
+    operational data and should not be public.
+    """
+    if not CREDIT_STATS_TOKEN:
+        return {"error": "not found"}, 404
+
+    supplied = (request.headers.get("Authorization", "")
+                .replace("Bearer ", "", 1).strip()
+                or request.args.get("token", "").strip())
+    # Constant-time compare: a token checked with == leaks its prefix to anyone
+    # willing to measure the response.
+    if not hmac.compare_digest(supplied, CREDIT_STATS_TOKEN):
+        return {"error": "unauthorized"}, 401
+
+    snapshot = credit_snapshot()
+    snapshot["prewarm"] = {
+        "enabled": PREWARM,
+        "running_here": _prewarm_started,
+        "interval_seconds": PREWARM_INTERVAL,
+        "active_hours_utc": PREWARM_ACTIVE_HOURS,
+        "in_active_window_now": _in_active_hours(),
+        "demand_window_seconds": PREWARM_DEMAND_WINDOW,
+        "categories_in_demand": sorted(
+            slug for slug in category_rules.CATEGORIES
+            if _category_in_demand(slug, _read_prewarm_state())
+        ),
+    }
+    return snapshot
+
+
+# ===============================
+# ROBOTS
+# ===============================
+@app.route("/robots.txt")
+def robots():
+    """Crawl rules.
+
+    This file was referenced in three code comments as the thing that keeps
+    crawlers off the paid routes, but it was never actually served — the route
+    did not exist, so every bot got a 404 and crawled whatever it liked. The
+    /go bot check caught the honest ones by User-Agent; this closes the gap for
+    the ones that read robots.txt but do not announce themselves.
+
+    /go/ is disallowed because each click resolves a merchant link upstream at
+    one credit a time, and /api/ because price-check and trust are machine
+    endpoints with no crawl value. Category and product pages stay open — they
+    are the content worth indexing, and they are served from cache.
+    """
+    body = (
+        "User-agent: *\n"
+        "Disallow: /go/\n"
+        "Disallow: /api/\n"
+        "Allow: /\n"
+    )
+    return body, 200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
     }
 
 

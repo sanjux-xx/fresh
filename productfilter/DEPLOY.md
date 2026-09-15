@@ -33,7 +33,7 @@ Set these in your hosting provider's config panel. Full annotated list is in
 **Performance (added for the 2026-08-13 speed-test fixes — all have defaults)**
 
     PREWARM=1               keep category feeds warm in the background
-    PREWARM_INTERVAL=900    seconds between pre-warm cycles
+    PREWARM_INTERVAL=1800   seconds between pre-warm cycles (clamped up to CACHE_TTL)
     STALE_TTL=86400         how long an expired feed may still be served
     SERPAPI_TIMEOUT=30      hang-guard on one upstream call, seconds — must stay
                             above SerpApi's real cold latency (3.6-11.5 s) and
@@ -44,10 +44,44 @@ Set these in your hosting provider's config panel. Full annotated list is in
     STATIC_MAX_AGE=31536000 lifetime of a content-hashed /static URL
     HTML_SMAX_AGE=120       how long a shared cache may hold an HTML page
 
-Cost note: pre-warming costs one SerpApi call per category per worker per
-cycle. With the defaults (5 categories, 2 workers, 15 minutes) that is about
-40 calls an hour, and it is what keeps the cold path off your visitors. Raise
-`PREWARM_INTERVAL` to spend less, or set `PREWARM=0` to opt out entirely.
+**Credit-waste controls (2026-09-15 — read this before touching the defaults)**
+
+    PREWARM_SINGLE_WORKER=1     only one worker pre-warms, via a file lock
+    PREWARM_ACTIVE_HOURS=3-19   UTC window for pre-warm (= 08:30-00:30 IST)
+    PREWARM_DEMAND_WINDOW=21600 stop warming a category nobody has browsed in 6h
+    AUTO_CREDIT_DAILY_BUDGET=150 daily ceiling on calls no shopper is waiting for
+    PRICE_CHECK_ALLOW_UPSTREAM=0 price alerts answer from cache, never pay
+    CREDIT_STATS_TOKEN=         token for /api/credit-usage (unset = route 404s)
+
+Cost note: pre-warming used to cost one SerpApi call per category per worker
+per cycle, unconditionally and around the clock. At the old defaults (5
+categories, 2 workers, a 900 s interval against a 1200 s freshness window)
+that was roughly **20 calls an hour, ~480 a day, spent whether or not anybody
+visited the site** — a flat floor of successful searches on the SerpApi
+dashboard that never fell to zero, even overnight.
+
+It now costs at most one call per *browsed* category per `PREWARM_INTERVAL`,
+in one worker, inside `PREWARM_ACTIVE_HOURS`, up to
+`AUTO_CREDIT_DAILY_BUDGET`. An idle site costs nothing. Warmth is not lost
+when a gate closes: `STALE_TTL` (24 h) means the first visitor to a cold
+category is still served instantly from the stale copy while a refresh runs
+behind them.
+
+To spend even less, raise `PREWARM_INTERVAL`, narrow `PREWARM_ACTIVE_HOURS`,
+or set `PREWARM=0` to opt out entirely. To go back to the old behaviour (and
+the old bill), set `PREWARM_DEMAND_WINDOW=0`, `PREWARM_ACTIVE_HOURS=0-24` and
+`PREWARM_SINGLE_WORKER=0`.
+
+**Finding out where your credits actually went.** Set `CREDIT_STATS_TOKEN` and
+ask the app instead of guessing from the dashboard:
+
+    curl -H "Authorization: Bearer $CREDIT_STATS_TOKEN" \
+         https://productfilter.dev/api/credit-usage
+
+`automatic` is spend your own code caused (pre-warm, background refresh, price
+alerts); `user_driven` is spend a person caused. Counts are per worker process
+and reset at UTC midnight, so poll it a few times — the `pid` field tells you
+which worker answered.
 
 Everything else has a working default. Do not set `TRUSTSCAN_PUBLIC_DEEP=1`
 unless you want anonymous callers to trigger outbound RDAP lookups.
