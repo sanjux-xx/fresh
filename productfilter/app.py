@@ -868,6 +868,23 @@ def remember_merchant_route(product_id, token, store, fallback,
         "ts": time.time(),
     }
     _prune_merchant_routes()
+    
+        # Pre-resolve in the background so the URL is ready before any click.
+    # Only launch a thread when there is no cached URL yet (or TTL has
+    # expired) and no thread is already working on this product.
+    now = time.time()
+    needs_resolve = not resolved or (now - resolved_ts >= MERCHANT_TTL)
+    if needs_resolve:
+        with _merchant_resolve_lock:
+            if product_id not in _merchant_resolve_inflight:
+                _merchant_resolve_inflight.add(product_id)
+                t = threading.Thread(
+                    target=_resolve_merchant_bg,
+                    args=(product_id,),
+                    daemon=True,
+                )
+                t.start()
+                
     return merchant_route_path(product_id, query, scope)
 
 
@@ -1006,6 +1023,24 @@ def resolve_merchant_link(product_id):
 _refresh_inflight = set()
 _refresh_lock = threading.Lock()
 
+# Product IDs whose merchant URL is currently being pre-resolved in the
+# background. Same single-flight pattern as _refresh_inflight: if a product
+# appears in multiple concurrent searches, only one SerpApi call is made.
+_merchant_resolve_inflight = set()
+_merchant_resolve_lock = threading.Lock()
+def _resolve_merchant_bg(product_id):
+    """Resolve a merchant URL in a background daemon thread.
+    Called by remember_merchant_route so that the resolved URL is warm in
+    merchant_routes before a shopper ever clicks the /go link, keeping
+    SerpApi entirely out of the redirect critical path.
+    """
+    try:
+        resolve_merchant_link(product_id)
+    except Exception:
+        pass
+    finally:
+        with _merchant_resolve_lock:
+            _merchant_resolve_inflight.discard(product_id)
 
 def _cache_key_for(query, scope=""):
     # The cache key carries the scope (category slug) as well as the query.
