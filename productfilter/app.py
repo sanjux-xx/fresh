@@ -244,6 +244,12 @@ CACHE_TTL = 20 * 60
 #                   a category landing page at all.
 STALE_TTL = int(os.getenv("STALE_TTL", str(24 * 60 * 60)))
 SERPAPI_TIMEOUT = max(float(os.getenv("SERPAPI_TIMEOUT", "30")), 15.0)
+# Shorter deadline used on the fallback retry after a first timeout.  The two
+# sequential calls must sum to less than gunicorn's 45 s worker timeout; with
+# the primary at 30 s this leaves at most ~14 s for the retry.  10 s is
+# generous enough for a small result set (num=SERPAPI_NUM_FALLBACK) and keeps
+# the total worst-case block to ~40 s.
+SERPAPI_TIMEOUT_FALLBACK = max(float(os.getenv("SERPAPI_TIMEOUT_FALLBACK", "10")), 5.0)
 
 # Ceiling on concurrent background refreshes. Every refresh is a billable
 # SerpApi call, and each gunicorn worker holds its own in-process cache, so
@@ -1377,14 +1383,14 @@ def _fetch_product_prices(query, scope, cache_key):
         "api_key":  os.getenv("SERPAPI_KEY")
     }
 
-    def _do_search(num):
+    def _do_search(num, timeout=SERPAPI_TIMEOUT):
         """Run one SerpApi call with the given num and return get_dict()."""
         search = GoogleSearch({**params, "num": str(num)})
         # google-search-results passes .timeout straight to requests.get and
         # defaults it to 60000 — seconds, not milliseconds, so effectively no
         # timeout. Without this line a slow upstream can hold a gunicorn
         # thread (and the shopper) far past the 45 s gunicorn timeout.
-        search.timeout = SERPAPI_TIMEOUT
+        search.timeout = timeout
         return search.get_dict()
     try:
         try:
@@ -1406,7 +1412,24 @@ def _fetch_product_prices(query, scope, cache_key):
             # The retry is a second billable search, so it is counted as one.
             # Undercounting here is how a retry storm hides inside a quota.
             note_credit(source)
-            results = _do_search(SERPAPI_NUM_FALLBACK)
+            try:
+                # Use a shorter deadline so both calls together stay under
+                # gunicorn's 45 s worker timeout (primary 30 s + retry 10 s).
+                results = _do_search(SERPAPI_NUM_FALLBACK, timeout=SERPAPI_TIMEOUT_FALLBACK)
+            except requests.exceptions.ReadTimeout:
+                # Fallback also timed out — SerpApi is too slow right now.
+                # Record a breadcrumb and return None so the caller can serve
+                # stale cache instead of propagating an exception to Sentry.
+                sentry_sdk.add_breadcrumb(
+                    message=(
+                        f"SerpApi ReadTimeout on fallback with num={SERPAPI_NUM_FALLBACK}; "
+                        f"giving up"
+                    ),
+                    category="serpapi",
+                    level="warning",
+                    data={"query": query, "scope": scope},
+                )
+                return None
             
         products = []
         # Everything needed to rebuild the merchant routes from a cache hit.
