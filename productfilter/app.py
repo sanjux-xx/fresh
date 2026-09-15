@@ -1124,14 +1124,58 @@ def resolve_merchant_link(product_id):
     Returns (None, "") when the listing is unknown or cannot be resolved.
     Cached for MERCHANT_TTL so repeat clicks on the same product — the common
     case when a page is shared — cost nothing.
+    Stale-while-revalidate: if a previously resolved URL has aged past
+    MERCHANT_TTL, it is returned immediately (avoiding any SerpApi wait for the
+    shopper) and a background thread re-resolves it for the next visitor.
+    Only the very first resolve for a product — when no URL is cached yet —
+    blocks on SerpApi, and on timeout that falls through to the caller's
+    existing fallback URL.
     """
+    
     entry = merchant_routes.get(product_id)
     if not entry:
         return None, ""
 
     now = time.time()
-    if entry.get("resolved") and now - entry.get("resolved_ts", 0) < MERCHANT_TTL:
+    if entry.get("resolved"):
+        if now - entry.get("resolved_ts", 0) < MERCHANT_TTL:
+            # Fresh cached URL — serve it directly.
+            return entry["resolved"], entry.get("resolved_store", "")
+        # Stale but present — return the stale URL immediately so the shopper
+        # is never blocked on SerpApi, and refresh in the background.
+        _resolve_in_background(product_id)
+        
         return entry["resolved"], entry.get("resolved_store", "")
+    
+    # No resolved URL yet (first-ever click on this product). Block on SerpApi
+    # with a timeout; on failure the caller falls through to its fallback URL.
+    # _fetch_merchant_link handles the SerpApi call and updates the entry.
+    _fetch_merchant_link(product_id)
+    if entry.get("resolved"):
+        return entry["resolved"], entry.get("resolved_store", "")
+    return None, ""
+# ===============================
+# SERPAPI
+# ===============================
+# Keys currently being refreshed in the background. A key is single-flighted:
+# ten simultaneous visitors to an expiring category trigger one paid refresh,
+# not ten, and all ten are served the stale copy without waiting for it.
+_refresh_inflight = set()
+_refresh_lock = threading.Lock()
+# Product IDs whose merchant link is currently being re-resolved in the
+# background. Single-flighted: if ten people click the same shared link
+# while the cached URL is stale, only one background resolve fires and all
+# ten are served the stale URL immediately — no one waits on SerpApi.
+_resolve_inflight = set()
+_resolve_lock = threading.Lock()
+def _fetch_merchant_link(product_id):
+    """Call SerpApi and update merchant_routes[product_id] in place.
+    Intended to run in a background thread. All errors are swallowed so a
+    background failure cannot affect the caller.
+    """
+    entry = merchant_routes.get(product_id)
+    if not entry:
+        return
 
     params = {
         "engine":     "google_immersive_product",
@@ -1144,13 +1188,7 @@ def resolve_merchant_link(product_id):
     try:
         note_credit("merchant_resolve")
         search = GoogleSearch(params)
-        # The client takes its request timeout as an attribute, not as a
-        # params key — a "timeout" inside params_dict would be forwarded to
-        # SerpApi as a query parameter and the request would still hang on
-        # the library default (60000, passed straight to requests as
-        # seconds, i.e. effectively forever). Set defensively: the attribute
-        # is what the pinned 2.4.2 client reads, and a client that lacks it
-        # simply keeps its own default.
+        
         try:
             search.timeout = MERCHANT_TIMEOUT
         except Exception:
@@ -1158,39 +1196,39 @@ def resolve_merchant_link(product_id):
         data = search.get_dict()
     except Exception as e:
         sentry_sdk.capture_exception(e)
-        return None, ""
+        return
 
     if not isinstance(data, dict) or data.get("error"):
-        return None, ""
-
-    # Do not trust the shape of the payload. SerpApi has been seen returning
-    # unexpected types in these fields, and `product_results` arriving as a
-    # list (rather than an object) used to raise AttributeError here, which
-    # surfaced to the shopper as a 500 error page instead of the Google
-    # fallback. Every branch below must end in a fallback, never an exception.
-    product_results = data.get("product_results")
+       
+      product_results = data.get("product_results")
     if not isinstance(product_results, dict):
-        return None, ""
+        return
 
     stores = product_results.get("stores")
     if not isinstance(stores, (list, tuple)):
         return None, ""
     link, store_name = _pick_store(stores, entry.get("store"))
     if not link:
-        return None, ""
+        return
 
     entry["resolved"] = link
     entry["resolved_store"] = store_name
-    entry["resolved_ts"] = now
-    return link, store_name
-
-
-# ===============================
-# SERPAPI
-# ===============================
-# Keys currently being refreshed in the background. A key is single-flighted:
-# ten simultaneous visitors to an expiring category trigger one paid refresh,
-# not ten, and all ten are served the stale copy without waiting for it.
+    entry["resolved_ts"] = time.time()
+def _resolve_in_background(product_id):
+    """Trigger a background re-resolve for product_id if one is not already running."""
+    with _resolve_lock:
+        if product_id in _resolve_inflight:
+            return
+        _resolve_inflight.add(product_id)
+    def _run():
+        try:
+            _fetch_merchant_link(product_id)
+        finally:
+            with _resolve_lock:
+                _resolve_inflight.discard(product_id)
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    
 _refresh_inflight = set()
 _refresh_lock = threading.Lock()
 
