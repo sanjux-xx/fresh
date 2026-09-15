@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for
 from serpapi import GoogleSearch
+import requests.exceptions
 import hashlib
 import json
 import mimetypes
@@ -420,6 +421,7 @@ MIN_QUERY_LEN = 3
 MAX_QUERY_LEN = 100
 
 SERPAPI_NUM = int(os.getenv("SERPAPI_NUM", "60"))
+SERPAPI_NUM_FALLBACK = int(os.getenv("SERPAPI_NUM_FALLBACK", "20"))
 PRICE_SANITY_RATIO = float(os.getenv("PRICE_SANITY_RATIO", "0.25"))
 
 def drop_implausible_prices(products, price_of=extract_price):
@@ -1116,19 +1118,38 @@ def _fetch_product_prices(query, scope, cache_key):
         # google_immersive_product engine, keyed by the per-row
         # immersive_product_page_token captured below and resolved lazily by
         # /go/<product_id> when a shopper actually clicks.
-        # More rows for the same one API call.
-        "num":      str(SERPAPI_NUM),
+       
         "api_key":  os.getenv("SERPAPI_KEY")
     }
 
-    try:
-        search = GoogleSearch(params)
+    def _do_search(num):
+        """Run one SerpApi call with the given num and return get_dict()."""
+        search = GoogleSearch({**params, "num": str(num)})
         # google-search-results passes .timeout straight to requests.get and
         # defaults it to 60000 — seconds, not milliseconds, so effectively no
         # timeout. Without this line a slow upstream can hold a gunicorn
         # thread (and the shopper) far past the 45 s gunicorn timeout.
         search.timeout = SERPAPI_TIMEOUT
-        results = search.get_dict()
+        return search.get_dict()
+    try:
+        try:
+            results = _do_search(SERPAPI_NUM)
+        except requests.exceptions.ReadTimeout:
+            # The full request timed out. Record a breadcrumb (not a full
+            # exception) so the retry context is visible in Sentry traces
+            # without creating a duplicate issue, then try again with a
+            # smaller page size that SerpApi can answer more quickly.
+            sentry_sdk.add_breadcrumb(
+                message=(
+                    f"SerpApi ReadTimeout with num={SERPAPI_NUM}; "
+                    f"retrying with num={SERPAPI_NUM_FALLBACK}"
+                ),
+                category="serpapi",
+                level="warning",
+                data={"query": query, "scope": scope},
+            )
+            results = _do_search(SERPAPI_NUM_FALLBACK)
+            
         products = []
         # Everything needed to rebuild the merchant routes from a cache hit.
         seeds = []

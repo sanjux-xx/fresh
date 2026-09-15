@@ -38,6 +38,8 @@ Set these in your hosting provider's config panel. Full annotated list is in
     SERPAPI_TIMEOUT=30      hang-guard on one upstream call, seconds — must stay
                             above SerpApi's real cold latency (3.6-11.5 s) and
                             below gunicorn's 45 s worker timeout
+    SERPAPI_NUM_FALLBACK=20 reduced page size used on a single retry when the
+                            full SERPAPI_NUM request times out; must be < SERPAPI_NUM
     MAX_REFRESH_THREADS=2   concurrent background refreshes per worker
     STATIC_MAX_AGE=31536000 lifetime of a content-hashed /static URL
     HTML_SMAX_AGE=120       how long a shared cache may hold an HTML page
