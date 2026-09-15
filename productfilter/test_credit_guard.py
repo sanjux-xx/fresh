@@ -303,6 +303,99 @@ resp = client.get("/api/credit-usage?token=wrong")
 check("a wrong token is rejected", resp.status_code == 401,
       "HTTP %d" % resp.status_code)
 
+
+# ===========================================================================
+print("\n7. BUY BUTTON STILL REACHES THE MERCHANT (regression, 2026-09-15)")
+print("=" * 76)
+#
+# Gating pre-warm meant feeds could be served from cache for hours, and a cache
+# hit replays the immersive tokens it stored. Expired tokens make the resolve
+# fail, which silently turned every Buy button into a Google Shopping link.
+# These checks pin the behaviour that a shopper actually notices.
+
+BROWSER_UA = {"User-Agent": "Mozilla/5.0 (Linux; Android 13) Chrome/120 Mobile"}
+
+
+class TokenAwareSearch(object):
+    """Mimics Google: an immersive token only resolves while it is fresh."""
+
+    fresh_token = "tok-gen-1"
+
+    def __init__(self, params=None):
+        self.params = params or {}
+        self.timeout = None
+
+    def get_dict(self):
+        engine = self.params.get("engine")
+        if engine == "google_immersive_product":
+            UPSTREAM_CALLS.append("immersive")
+            if self.params.get("page_token") != TokenAwareSearch.fresh_token:
+                return {"error": "page_token expired"}
+            return {"product_results": {"stores": [
+                {"name": "Amazon.in", "link": "https://www.amazon.in/dp/REAL"}]}}
+        UPSTREAM_CALLS.append(self.params.get("q", ""))
+        return {"shopping_results": [{
+            "title": "Test Phone 5G 128GB", "price": "\u20b919,999",
+            "source": "Amazon.in",
+            "link": "https://www.google.com/shopping/product/123456",
+            "thumbnail": "https://example.com/t.jpg", "product_id": "123456",
+            "immersive_product_page_token": TokenAwareSearch.fresh_token}]}
+
+
+app.GoogleSearch = TokenAwareSearch
+reset()
+
+app.get_product_prices("smartphone", scope="mobiles")
+resp = client.get("/go/123456?q=smartphone&s=mobiles", headers=BROWSER_UA)
+check("a fresh feed sends the shopper to the merchant",
+      "amazon.in" in (resp.headers.get("Location") or ""),
+      resp.headers.get("Location"))
+
+# Age the cached feed the way a quiet period does, and expire its token the way
+# Google does. No background refresh is available to paper over it.
+reset()
+app.get_product_prices("smartphone", scope="mobiles")
+key = app._cache_key_for("smartphone", "mobiles")
+data, _ts, seeds = app.cache[key]
+app.cache[key] = (data, time.time() - 12 * 3600, seeds)
+app.merchant_routes.clear()
+app._reseed_routes(app.cache[key], "smartphone", "mobiles")
+TokenAwareSearch.fresh_token = "tok-gen-2"      # the stored token is now dead
+
+real_bg = app._refresh_in_background
+app._refresh_in_background = lambda *a, **k: None
+try:
+    resp = client.get("/go/123456?q=smartphone&s=mobiles", headers=BROWSER_UA)
+    location = resp.headers.get("Location") or ""
+    check("a 12h-old feed still reaches the merchant, not Google Shopping",
+          "amazon.in" in location, location)
+    check("recovering it cost exactly one extra feed call",
+          UPSTREAM_CALLS.count("smartphone") == 2,
+          "%d feed calls" % UPSTREAM_CALLS.count("smartphone"))
+finally:
+    app._refresh_in_background = real_bg
+
+# A dead token with no query on the URL cannot be rebuilt; Google is correct there.
+reset()
+app.get_product_prices("smartphone", scope="mobiles")
+TokenAwareSearch.fresh_token = "tok-gen-3"
+resp = client.get("/go/123456", headers=BROWSER_UA)
+check("an unrecoverable click still degrades to Google, never a 500",
+      resp.status_code == 302
+      and "google.com/shopping" in (resp.headers.get("Location") or ""),
+      "HTTP %d" % resp.status_code)
+
+# And a bot must not be able to trigger the remint.
+reset()
+app.get_product_prices("smartphone", scope="mobiles")
+before = len(UPSTREAM_CALLS)
+client.get("/go/123456?q=smartphone&s=mobiles",
+           headers={"User-Agent": "Googlebot/2.1"})
+check("a crawler cannot trigger the token remint",
+      len(UPSTREAM_CALLS) == before, "%d new calls" % (len(UPSTREAM_CALLS) - before))
+
+app.GoogleSearch = FakeSearch
+
 # ===========================================================================
 print("\n" + "=" * 76)
 if FAILURES:
@@ -315,4 +408,3 @@ if FAILURES:
 print("SUMMARY: %d checks, all passed" % CHECKS[0])
 print("=" * 76)
 sys.exit(0)
-test_credits

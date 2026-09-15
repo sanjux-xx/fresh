@@ -72,6 +72,19 @@ or set `PREWARM=0` to opt out entirely. To go back to the old behaviour (and
 the old bill), set `PREWARM_DEMAND_WINDOW=0`, `PREWARM_ACTIVE_HOURS=0-24` and
 `PREWARM_SINGLE_WORKER=0`.
 
+**Buy button reaching the merchant.** A cached feed replays the Google tokens
+it stored, and those tokens expire long before `STALE_TTL` does. When a token is
+dead the resolve fails and the Buy button degrades to a Google Shopping page
+instead of the merchant's own site. `MERCHANT_TOKEN_MAX_AGE=1800` bounds this:
+a click on a feed older than 30 minutes re-fetches it first, and a failed
+resolve is retried once with a fresh token. Both cost one credit, only on a
+real click, and resolved URLs are then cached for `MERCHANT_TTL` (6h) so repeat
+clicks are free.
+
+If shoppers report landing on Google Shopping instead of Amazon/Flipkart, this
+is the setting to check first — and confirm your SerpApi quota is not exhausted,
+since a failed `google_immersive_product` call looks identical from outside.
+
 **Finding out where your credits actually went.** Set `CREDIT_STATS_TOKEN` and
 ask the app instead of guessing from the dashboard:
 

@@ -951,6 +951,25 @@ MERCHANT_TTL = int(os.getenv("MERCHANT_TTL", str(6 * 60 * 60)))
 # instead of falling back.
 MERCHANT_TIMEOUT = float(os.getenv("MERCHANT_TIMEOUT", "15"))
 
+# How old the feed behind a /go link may be before its immersive token is
+# assumed dead (regression fix, 2026-09-15).
+#
+# A cache entry carries the `immersive_product_page_token` for every row, and a
+# cache hit replays those same tokens (see _reseed_routes). Google's tokens are
+# short-lived, so a feed served from cache for hours hands resolve_merchant_link
+# a token that no longer works — the resolve returns nothing and the Buy button
+# silently degrades to the Google Shopping page instead of the merchant's site.
+#
+# This was masked for as long as pre-warming re-fetched every feed every ~30
+# minutes in every worker: tokens were never old enough to expire. Once
+# pre-warming became demand-gated, a visitor in a quiet period could be served a
+# feed up to STALE_TTL (24 h) old, and every Buy button on it pointed at Google.
+#
+# STALE_TTL is about *prices*, which age gracefully — a slightly old price is
+# still useful. Tokens do not age gracefully: they either work or they don't.
+# They need their own, much shorter bound, which is what this is.
+MERCHANT_TOKEN_MAX_AGE = int(os.getenv("MERCHANT_TOKEN_MAX_AGE", "1800"))
+
 PRODUCT_ID_RE = re.compile(r"^[0-9]{1,32}$")
 # Crawlers and link previewers must never trigger a resolve.
 #
@@ -1124,58 +1143,14 @@ def resolve_merchant_link(product_id):
     Returns (None, "") when the listing is unknown or cannot be resolved.
     Cached for MERCHANT_TTL so repeat clicks on the same product — the common
     case when a page is shared — cost nothing.
-    Stale-while-revalidate: if a previously resolved URL has aged past
-    MERCHANT_TTL, it is returned immediately (avoiding any SerpApi wait for the
-    shopper) and a background thread re-resolves it for the next visitor.
-    Only the very first resolve for a product — when no URL is cached yet —
-    blocks on SerpApi, and on timeout that falls through to the caller's
-    existing fallback URL.
     """
-    
     entry = merchant_routes.get(product_id)
     if not entry:
         return None, ""
 
     now = time.time()
-    if entry.get("resolved"):
-        if now - entry.get("resolved_ts", 0) < MERCHANT_TTL:
-            # Fresh cached URL — serve it directly.
-            return entry["resolved"], entry.get("resolved_store", "")
-        # Stale but present — return the stale URL immediately so the shopper
-        # is never blocked on SerpApi, and refresh in the background.
-        _resolve_in_background(product_id)
-        
+    if entry.get("resolved") and now - entry.get("resolved_ts", 0) < MERCHANT_TTL:
         return entry["resolved"], entry.get("resolved_store", "")
-    
-    # No resolved URL yet (first-ever click on this product). Block on SerpApi
-    # with a timeout; on failure the caller falls through to its fallback URL.
-    # _fetch_merchant_link handles the SerpApi call and updates the entry.
-    _fetch_merchant_link(product_id)
-    if entry.get("resolved"):
-        return entry["resolved"], entry.get("resolved_store", "")
-    return None, ""
-# ===============================
-# SERPAPI
-# ===============================
-# Keys currently being refreshed in the background. A key is single-flighted:
-# ten simultaneous visitors to an expiring category trigger one paid refresh,
-# not ten, and all ten are served the stale copy without waiting for it.
-_refresh_inflight = set()
-_refresh_lock = threading.Lock()
-# Product IDs whose merchant link is currently being re-resolved in the
-# background. Single-flighted: if ten people click the same shared link
-# while the cached URL is stale, only one background resolve fires and all
-# ten are served the stale URL immediately — no one waits on SerpApi.
-_resolve_inflight = set()
-_resolve_lock = threading.Lock()
-def _fetch_merchant_link(product_id):
-    """Call SerpApi and update merchant_routes[product_id] in place.
-    Intended to run in a background thread. All errors are swallowed so a
-    background failure cannot affect the caller.
-    """
-    entry = merchant_routes.get(product_id)
-    if not entry:
-        return
 
     params = {
         "engine":     "google_immersive_product",
@@ -1188,7 +1163,13 @@ def _fetch_merchant_link(product_id):
     try:
         note_credit("merchant_resolve")
         search = GoogleSearch(params)
-        
+        # The client takes its request timeout as an attribute, not as a
+        # params key — a "timeout" inside params_dict would be forwarded to
+        # SerpApi as a query parameter and the request would still hang on
+        # the library default (60000, passed straight to requests as
+        # seconds, i.e. effectively forever). Set defensively: the attribute
+        # is what the pinned 2.4.2 client reads, and a client that lacks it
+        # simply keeps its own default.
         try:
             search.timeout = MERCHANT_TIMEOUT
         except Exception:
@@ -1196,39 +1177,39 @@ def _fetch_merchant_link(product_id):
         data = search.get_dict()
     except Exception as e:
         sentry_sdk.capture_exception(e)
-        return
+        return None, ""
 
     if not isinstance(data, dict) or data.get("error"):
-       
-      product_results = data.get("product_results")
+        return None, ""
+
+    # Do not trust the shape of the payload. SerpApi has been seen returning
+    # unexpected types in these fields, and `product_results` arriving as a
+    # list (rather than an object) used to raise AttributeError here, which
+    # surfaced to the shopper as a 500 error page instead of the Google
+    # fallback. Every branch below must end in a fallback, never an exception.
+    product_results = data.get("product_results")
     if not isinstance(product_results, dict):
-        return
+        return None, ""
 
     stores = product_results.get("stores")
     if not isinstance(stores, (list, tuple)):
         return None, ""
     link, store_name = _pick_store(stores, entry.get("store"))
     if not link:
-        return
+        return None, ""
 
     entry["resolved"] = link
     entry["resolved_store"] = store_name
-    entry["resolved_ts"] = time.time()
-def _resolve_in_background(product_id):
-    """Trigger a background re-resolve for product_id if one is not already running."""
-    with _resolve_lock:
-        if product_id in _resolve_inflight:
-            return
-        _resolve_inflight.add(product_id)
-    def _run():
-        try:
-            _fetch_merchant_link(product_id)
-        finally:
-            with _resolve_lock:
-                _resolve_inflight.discard(product_id)
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    
+    entry["resolved_ts"] = now
+    return link, store_name
+
+
+# ===============================
+# SERPAPI
+# ===============================
+# Keys currently being refreshed in the background. A key is single-flighted:
+# ten simultaneous visitors to an expiring category trigger one paid refresh,
+# not ten, and all ten are served the stale copy without waiting for it.
 _refresh_inflight = set()
 _refresh_lock = threading.Lock()
 
@@ -1250,6 +1231,29 @@ def _reseed_routes(entry, query, scope):
     """
     for seed in (entry[2] if len(entry) > 2 else []):
         remember_merchant_route(query=query, scope=scope, **seed)
+
+
+def _remint_tokens(query, scope):
+    """Re-fetch a feed to mint fresh merchant tokens. Returns True on success.
+
+    Bypasses the cache deliberately: the cached copy is exactly the thing whose
+    tokens have expired, so serving it again would just reproduce the failure.
+
+    This is one billable call, and it only ever happens on a real click whose
+    resolve would otherwise have dumped the shopper on Google Shopping. It is
+    attributed to the user, not to an automatic source, and it is not subject to
+    the unattended budget — a person is waiting on this redirect.
+    """
+    if not is_valid_query(query):
+        return False
+    cache_key = _cache_key_for(query, scope)
+    try:
+        with crediting("user_search"):
+            products = _fetch_product_prices(query, scope, cache_key)
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        return False
+    return products is not None
 
 
 def _claim_refresh(cache_key):
@@ -1977,20 +1981,38 @@ def go_to_merchant(product_id):
     if _is_automated_client():
       return redirect(google_product, code=302)
 
+    recover_q = request.args.get("q", "").strip()
+    recover_s = request.args.get("s", "").strip()[:40]
+    reminted = False
+
     entry = merchant_routes.get(product_id)
 
     if not entry:
         # This worker never served the search that produced the link — see
         # merchant_route_path. Re-run the feed for the query carried on the
         # URL, which is usually a cache hit, and try the table again.
-        recover_q = request.args.get("q", "").strip()
         if is_valid_query(recover_q):
             try:
-                get_product_prices(recover_q,
-                                   scope=request.args.get("s", "").strip()[:40])
+                get_product_prices(recover_q, scope=recover_s)
             except Exception as e:
                 sentry_sdk.capture_exception(e)
             entry = merchant_routes.get(product_id)
+
+    # The token this entry carries may have come from a feed that has been sat
+    # in cache for hours. Refresh it *before* spending a resolve on a token that
+    # is almost certainly dead — see MERCHANT_TOKEN_MAX_AGE. Skipped when we
+    # already hold a resolved URL for this product, which needs no token at all.
+    if entry is not None and MERCHANT_TOKEN_MAX_AGE > 0:
+        have_fresh_resolution = (
+            entry.get("resolved")
+            and time.time() - entry.get("resolved_ts", 0) < MERCHANT_TTL)
+        token_age = time.time() - entry.get("ts", 0)
+        if (not have_fresh_resolution
+                and token_age > MERCHANT_TOKEN_MAX_AGE
+                and is_valid_query(recover_q)):
+            if _remint_tokens(recover_q, recover_s):
+                reminted = True
+                entry = merchant_routes.get(product_id) or entry
 
     if not entry:
         # Nothing left to resolve with. Send the shopper to the Google
@@ -2010,6 +2032,24 @@ def go_to_merchant(product_id):
     except Exception as e:
         sentry_sdk.capture_exception(e)
         link, store_name = None, ""
+
+    # One retry with a freshly minted token. A resolve can come back empty
+    # because the token expired sooner than MERCHANT_TOKEN_MAX_AGE assumed, and
+    # the difference between "retry once" and "give up" is the difference
+    # between the merchant's own page and a Google Shopping detour. Guarded by
+    # `reminted` so a click can never cost more than one extra call, and only
+    # attempted when the URL carries the query needed to rebuild the feed.
+    if not link and not reminted and is_valid_query(recover_q):
+        if _remint_tokens(recover_q, recover_s):
+            reminted = True
+            entry = merchant_routes.get(product_id) or entry
+            fallback = trustscan.safe_link(entry.get("fallback", ""))
+            fallback = fallback if fallback != "#" else "/"
+            try:
+                link, store_name = resolve_merchant_link(product_id)
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+                link, store_name = None, ""
 
     if not link:
         return redirect(fallback, code=302)
