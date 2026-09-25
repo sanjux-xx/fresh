@@ -1152,6 +1152,16 @@ def resolve_merchant_link(product_id):
     if entry.get("resolved") and now - entry.get("resolved_ts", 0) < MERCHANT_TTL:
         return entry["resolved"], entry.get("resolved_store", "")
 
+    # Guard against stale tokens. Google's immersive_product_page_token values
+    # are short-lived; a feed served from cache for hours carries tokens that
+    # SerpApi cannot resolve and will hang on, costing a credit and a timeout.
+    # Return early so the caller's _remint_tokens retry path can mint a fresh
+    # token before trying again.
+    if MERCHANT_TOKEN_MAX_AGE > 0:
+        token_age = now - entry.get("ts", 0)
+        if token_age > MERCHANT_TOKEN_MAX_AGE:
+            return None, ""
+
     params = {
         "engine":     "google_immersive_product",
         "page_token": entry["token"],
